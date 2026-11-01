@@ -58,8 +58,8 @@ ClipFetch/
 ### 1. Clone the Repository
 
 ```bash
-git clone YOUR_GITHUB_REPOSITORY_URL
-cd ClipFetch
+git clone https://github.com/prasant9748301007-cyber/ClipFetch-Media-Downloader-.git
+cd ClipFetch-Media-Downloader-
 ```
 
 ### 2. Create a Virtual Environment
