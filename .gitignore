@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual environments
+venv/
+.venv/
+
+# Environment variables and secrets
+.env
+
+# Temporary media
+backend/temp/*
+!backend/temp/.gitkeep
+
+# SQLite databases
+*.db
+*.sqlite3
+
+# Test artifacts
+.pytest_cache/
+.coverage
+# Backup files
+*.backup
+*.backup*
+*.before-*
+*.bak

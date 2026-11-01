@@ -1,0 +1,248 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="ClipFetch - Download your media quickly and easily.">
+    <title>ClipFetch - Download Your Media</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+    <!-- Navigation -->
+    <header class="navbar">
+        <div class="nav-container">
+            <a href="#" class="brand">
+                <span class="brand-icon">⇩</span>
+                <span>Clip<span>Fetch</span></span>
+            </a>
+
+            <nav class="nav-links">
+                <a href="#home" class="active">⌂ Home</a>
+                <a href="#about">ⓘ About</a>
+                <a href="#platforms">▱ Supported Platforms</a>
+            </nav>
+
+            <div class="nav-actions">
+                <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle theme">☼</button>
+                <a href="#home" class="nav-cta">Fast · Easy · Free</a>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <!-- Hero Section -->
+        <section class="hero" id="home">
+            <div class="hero-container">
+
+                <div class="hero-content">
+                    <p class="eyebrow">DOWNLOAD YOUR MEDIA</p>
+                    <h1>ClipFetch</h1>
+                    <p class="hero-description">
+                        Download TikTok, Instagram, Facebook and more
+                        media in high quality — fast and easy!
+                    </p>
+
+                    <div class="features">
+                        <div class="feature">
+                            <span class="feature-icon">ϟ</span>
+                            <div>
+                                <strong>Fast Processing</strong>
+                                <small>Get your media in seconds</small>
+                            </div>
+                        </div>
+
+                        <div class="feature">
+                            <span class="feature-icon">⬡</span>
+                            <div>
+                                <strong>Secure &amp; Safe</strong>
+                                <small>Your privacy matters</small>
+                            </div>
+                        </div>
+
+                        <div class="feature">
+                            <span class="feature-icon">★</span>
+                            <div>
+                                <strong>High Quality</strong>
+                                <small>Best available quality</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="hero-form-area">
+                    <form class="url-form" id="fetchForm">
+                        <div class="url-input-wrap">
+                            <span class="link-icon">↗</span>
+                            <input
+                                type="url"
+                                id="urlInput"
+                                name="url"
+                                placeholder="Paste your media URL here..."
+                                autocomplete="url"
+                                required
+                            >
+                        </div>
+                        <button type="submit" class="primary-button" id="fetchBtn">
+                            <span>⌕</span> Fetch Media
+                        </button>
+                    </form>
+
+                    <p class="supported-note">
+                        <span>♧</span>
+                        <strong>Supported platforms:</strong>
+                        <span>TikTok</span> •
+                        <span>Instagram</span> •
+                        <span>Facebook</span>
+                    </p>
+
+                    <p class="status-message" id="statusMessage" role="status" aria-live="polite"></p>
+                </div>
+
+                <div class="hero-decoration" aria-hidden="true">
+                    <div class="floating-social tiktok">♪</div>
+                    <div class="floating-social instagram">◎</div>
+                    <div class="floating-social facebook">f</div>
+                    <div class="floating-download">⬇</div>
+                </div>
+
+            </div>
+        </section>
+
+        <!-- Supported Platforms -->
+        <section class="platform-section section-container" id="platforms">
+            <div class="platform-intro">
+                <h2>Supported Platforms</h2>
+                <p>We support the most popular social media platforms</p>
+            </div>
+
+            <div class="platform-card">
+                <div class="platform-icon tiktok">♪</div>
+                <div>
+                    <h3>TikTok</h3>
+                    <p>Videos, photos, slideshows</p>
+                    <span class="supported-badge">Supported</span>
+                </div>
+            </div>
+
+            <div class="platform-card">
+                <div class="platform-icon instagram">◎</div>
+                <div>
+                    <h3>Instagram</h3>
+                    <p>Reels, posts, stories, videos</p>
+                    <span class="supported-badge">Supported</span>
+                </div>
+            </div>
+
+            <div class="platform-card">
+                <div class="platform-icon facebook">f</div>
+                <div>
+                    <h3>Facebook</h3>
+                    <p>Videos, photos, reels</p>
+                    <span class="supported-badge">Supported</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Media Result -->
+        <section class="result-section section-container" id="mediaResult" hidden>
+
+            <div class="media-card">
+                <div class="media-preview">
+                    <div class="thumbnail-wrap">
+                        <img id="thumbnail" src="" alt="Media thumbnail">
+                        <div class="preview-overlay">▶</div>
+                    </div>
+                </div>
+
+                <div class="media-information">
+                    <span class="media-found-badge">✓ Media found</span>
+                    <h2 id="mediaTitle">Media title</h2>
+                    <p id="mediaDescription">Your media information will appear here.</p>
+
+                    <div class="media-details">
+                        <div class="detail-row">
+                            <span>◷ Duration</span>
+                            <strong id="mediaDuration">--</strong>
+                        </div>
+                        <div class="detail-row">
+                            <span>▱ Resolution</span>
+                            <strong id="mediaResolution">--</strong>
+                        </div>
+                        <div class="detail-row">
+                            <span>▣ Format</span>
+                            <strong id="mediaFormat">--</strong>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="download-card">
+                <h3>Choose Download Format</h3>
+
+                <div class="format-options" id="formatOptions">
+                    <label class="format-option">
+                        <input type="radio" name="format_id" value="best" checked>
+                        <span class="radio-circle"></span>
+                        <span class="format-info">
+                            <strong>Best Quality <small>(Recommended)</small></strong>
+                            <small>Best available quality</small>
+                        </span>
+                        <span class="quality-tag">HD</span>
+                    </label>
+
+                </div>
+
+                <button type="button" class="download-button" id="downloadBtn">
+                    <span>⇩</span> Download Media
+                </button>
+
+                <p class="download-note">ⓘ Your download will start automatically.</p>
+                <p class="status-message" id="downloadStatus" role="status" aria-live="polite"></p>
+            </div>
+
+        </section>
+
+        <!-- About -->
+        <section class="about-section section-container" id="about">
+            <p class="eyebrow">SIMPLE. FAST. CONVENIENT.</p>
+            <h2>Your media, made easy.</h2>
+            <p>
+                ClipFetch brings supported media links together in one simple
+                place. Paste a link, fetch available media information, choose
+                a format and download content you are authorized to save.
+            </p>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="footer-container">
+            <div class="footer-brand">
+                <a href="#" class="brand">
+                    <span class="brand-icon">⇩</span>
+                    <span>Clip<span>Fetch</span></span>
+                </a>
+                <p>Download. Watch. Enjoy.</p>
+            </div>
+
+            <div class="footer-links">
+            <a href="#about">About</a>
+            <a href="privacy.html">Privacy Policy</a>
+            <a href="terms.html">Terms of Service</a>
+            <a href="#platforms">Supported Platforms</a>
+        </div>
+            <p class="copyright">© 2026 ClipFetch. All rights reserved.</p>
+        </div>
+    </footer>
+
+    <script src="js/config.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
