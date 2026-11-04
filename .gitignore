@@ -1,28 +1,70 @@
+
+# ==============================
 # Python
+# ==============================
 __pycache__/
 *.py[cod]
 *.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
 
-# Virtual environments
+# ==============================
+# Virtual Environments
+# ==============================
 venv/
 .venv/
+env/
 
-# Environment variables and secrets
+# ==============================
+# Environment Variables & Secrets
+# ==============================
 .env
+.env.*
+!.env.example
+!.env.*.example
 
-# Temporary media
+# Private keys and credentials
+*.pem
+*.key
+id_rsa
+id_ed25519
+credentials.json
+secrets.json
+
+# ==============================
+# Temporary Media & Downloads
+# ==============================
 backend/temp/*
 !backend/temp/.gitkeep
+downloads/
+temp/
+*.part
 
-# SQLite databases
+# ==============================
+# Databases
+# ==============================
 *.db
 *.sqlite3
 
-# Test artifacts
-.pytest_cache/
-.coverage
-# Backup files
+# ==============================
+# Logs
+# ==============================
+*.log
+
+# ==============================
+# Backup Files
+# ==============================
 *.backup
 *.backup*
 *.before-*
 *.bak
+*~
+
+# ==============================
+# Editor & OS Files
+# ==============================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
