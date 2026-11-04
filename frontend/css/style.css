@@ -353,8 +353,20 @@ a {
     color: #425b8b;
     font-size: 13px;
     overflow-wrap: anywhere;
+    font-weight: 500;
 }
 
+/* SUCCESS MESSAGE */
+.status-message.success {
+    color: #16a34a;
+    font-weight: 700;
+}
+
+/* ERROR MESSAGE */
+.status-message.error {
+    color: #dc2626;
+    font-weight: 700;
+}
 .hero-decoration {
     position: absolute;
     right: 25px;
@@ -1312,4 +1324,61 @@ body.dark-theme .format-option .quality-tag {
 body.dark-theme .format-option:has(input:checked) .quality-tag {
     background: #e8edff;
     color: #3036a8 !important;
+}
+/* FIX: Status message colors in dark theme */
+
+body.dark-theme p.status-message.success {
+    color: #22c55e;
+    font-weight: 700;
+}
+
+body.dark-theme p.status-message.error {
+    color: #ef4444;
+    font-weight: 700;
+}
+/* ========================================
+   CLIPFETCH MOBILE LAYOUT IMPROVEMENTS
+======================================== */
+
+@media (max-width: 768px) {
+
+    /* Hide hero feature items on mobile */
+    .features {
+        display: none !important;
+    }
+
+    /* Reorder main sections on mobile */
+    main {
+        display: flex;
+        flex-direction: column;
+    }
+
+    #home {
+        order: 1;
+        width: 100%;
+    }
+
+    /* Show media result immediately after hero */
+    #mediaResult {
+        order: 2;
+        width: 100%;
+        margin-top: 15px;
+    }
+
+    /* Keep supported platforms below media result */
+    #platforms {
+        order: 3;
+        width: 100%;
+    }
+
+    #about {
+        order: 4;
+        width: 100%;
+    }
+
+    /* Keep result hidden until media is fetched */
+    #mediaResult[hidden] {
+        display: none !important;
+    }
+
 }

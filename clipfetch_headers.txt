@@ -1,0 +1,11 @@
+HTTP/1.1 200 OK
+date: Wed, 04 Nov 2026 13:07:41 GMT
+server: uvicorn
+content-type: video/mp4
+accept-ranges: bytes
+content-disposition: attachment; filename="clipfetch_media.mp4"
+content-length: 16327833
+last-modified: Wed, 04 Nov 2026 13:07:59 GMT
+etag: "99f60d1f57b2ec2efdf011617e9982ed"
+vary: Origin
+
