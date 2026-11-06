@@ -1,19 +1,28 @@
+
 import asyncio
 import logging
 from urllib.parse import urlsplit
 
 import yt_dlp
 from yt_dlp.networking.impersonate import ImpersonateTarget
+
 from app.services.platform_detector import detect_platform
 
 
 logger = logging.getLogger(__name__)
 
-# Initial MVP limits.
+# Metadata resource limits.
 MAX_URL_LENGTH = 2048
 METADATA_TIMEOUT = 60
 SOCKET_TIMEOUT = 10
 MAX_FORMATS = 20
+
+MAX_CONCURRENT_METADATA = 3
+METADATA_QUEUE_TIMEOUT = 5
+
+_METADATA_SEMAPHORE = asyncio.Semaphore(
+    MAX_CONCURRENT_METADATA
+)
 
 
 class MediaServiceError(Exception):
@@ -24,7 +33,7 @@ def _extract_metadata(url: str) -> dict:
     """
     Extract metadata without downloading the media.
 
-    This function must only be used for URLs that pass our
+    This function must only be used for URLs that pass
     application validation and safety checks.
     """
 
@@ -38,9 +47,12 @@ def _extract_metadata(url: str) -> dict:
         "extractor_retries": 0,
         "ignoreerrors": False,
     }
-    # TikTok requires browser impersonation for webpage extraction.
+
+    # TikTok requires browser impersonation.
     if detect_platform(url).get("platform") == "TikTok":
-        options["impersonate"] = ImpersonateTarget.from_str("chrome-136")
+        options["impersonate"] = ImpersonateTarget.from_str(
+            "chrome-136"
+        )
 
     try:
         with yt_dlp.YoutubeDL(options) as ydl:
@@ -49,8 +61,8 @@ def _extract_metadata(url: str) -> dict:
         if not info:
             raise MediaServiceError(
                 "No media information was returned."
-        )
-     # Some extractors return a playlist-like result.
+            )
+
         if info.get("_type") in {"playlist", "multi_video"}:
             raise MediaServiceError(
                 "Playlist URLs are not supported."
@@ -63,10 +75,18 @@ def _extract_metadata(url: str) -> dict:
                 "format_id": item.get("format_id"),
                 "extension": item.get("ext"),
                 "resolution": item.get("resolution"),
-                "filesize": item.get("filesize")
-                or item.get("filesize_approx"),
-                "has_video": item.get("vcodec") not in (None, "none"),
-                "has_audio": item.get("acodec") not in (None, "none"),
+                "filesize": (
+                    item.get("filesize")
+                    or item.get("filesize_approx")
+                ),
+                "has_video": item.get("vcodec") not in (
+                    None,
+                    "none",
+                ),
+                "has_audio": item.get("acodec") not in (
+                    None,
+                    "none",
+                ),
             })
 
         return {
@@ -91,10 +111,23 @@ def _extract_metadata(url: str) -> dict:
             "unavailable, unsupported, or restricted by the platform."
         ) from exc
 
+def _create_metadata_worker(url):
+    """Create the background metadata worker safely."""
+
+    worker_coroutine = asyncio.to_thread(
+        _extract_metadata,
+        url,
+    )
+
+    try:
+        return asyncio.create_task(worker_coroutine)
+    except BaseException:
+        worker_coroutine.close()
+        raise
 
 async def get_media_metadata(url: str) -> dict:
     """
-    Validate the URL and retrieve metadata without downloading media.
+    Validate URL and retrieve metadata with resource limits.
     """
 
     if not isinstance(url, str) or not url.strip():
@@ -110,28 +143,68 @@ async def get_media_metadata(url: str) -> dict:
     if not detection["valid"]:
         raise MediaServiceError(detection["message"])
 
-    # Extra guard before passing a URL to yt-dlp.
     parsed = urlsplit(url)
 
     if parsed.scheme != "https" or not parsed.hostname:
         raise MediaServiceError("Only valid HTTPS URLs are supported.")
 
     if parsed.username is not None or parsed.password is not None:
-        raise MediaServiceError("URLs containing credentials are not allowed.")
+        raise MediaServiceError(
+            "URLs containing credentials are not allowed."
+        )
 
-    if parsed.port not in (None, 443):
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise MediaServiceError("Invalid URL port.") from exc
+
+    if port not in (None, 443):
         raise MediaServiceError("Custom URL ports are not supported.")
 
     try:
+        await asyncio.wait_for(
+            _METADATA_SEMAPHORE.acquire(),
+            timeout=METADATA_QUEUE_TIMEOUT,
+        )
+    except asyncio.TimeoutError as exc:
+        raise MediaServiceError(
+            "The metadata service is busy. Please try again shortly."
+        ) from exc
+
+    try:
+        worker = _create_metadata_worker(url)
+    except BaseException:
+        _METADATA_SEMAPHORE.release()
+        raise
+
+    def release_after_worker(finished_task):
+        try:
+            finished_task.result()
+        except BaseException:
+            pass
+        finally:
+            _METADATA_SEMAPHORE.release()
+
+    try:
         metadata = await asyncio.wait_for(
-            asyncio.to_thread(_extract_metadata, url),
+            asyncio.shield(worker),
             timeout=METADATA_TIMEOUT,
         )
+        _METADATA_SEMAPHORE.release()
 
     except asyncio.TimeoutError as exc:
+        worker.add_done_callback(release_after_worker)
         raise MediaServiceError(
             "The metadata request timed out. Please try again later."
         ) from exc
+
+    except asyncio.CancelledError:
+        worker.add_done_callback(release_after_worker)
+        raise
+
+    except Exception:
+        _METADATA_SEMAPHORE.release()
+        raise
 
     return {
         "platform": detection["platform"],

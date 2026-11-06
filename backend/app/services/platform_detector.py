@@ -1,3 +1,4 @@
+
 from urllib.parse import urlsplit
 
 
@@ -20,13 +21,15 @@ PLATFORM_HOSTS = {
     "fb.watch": "Facebook",
 }
 
+MAX_URL_LENGTH = 2048
+
 
 def detect_platform(url: str) -> dict:
     """
     Validate a media URL and identify its supported platform.
 
     This function identifies URLs only.
-    It does not check whether media exists or is downloadable.
+    It does not guarantee that the media is safe or downloadable.
     """
 
     if not isinstance(url, str):
@@ -36,8 +39,6 @@ def detect_platform(url: str) -> dict:
             "message": "URL must be a string.",
         }
 
-    url = url.strip()
-
     if not url:
         return {
             "valid": False,
@@ -45,17 +46,28 @@ def detect_platform(url: str) -> dict:
             "message": "Please enter a URL.",
         }
 
-    if len(url) > 2048:
+    if len(url) > MAX_URL_LENGTH:
         return {
             "valid": False,
             "platform": None,
             "message": "URL is too long.",
         }
 
+    # Reject whitespace, ASCII control characters and backslashes
+    # before urlsplit(), which may normalize some of these characters.
+    if any(
+        ord(char) <= 32 or ord(char) == 127
+        for char in url
+    ) or "\\" in url:
+        return {
+            "valid": False,
+            "platform": None,
+            "message": "URL contains invalid characters.",
+        }
+
     try:
         parsed = urlsplit(url)
 
-        # Only allow HTTPS URLs.
         if parsed.scheme.lower() != "https":
             return {
                 "valid": False,
@@ -70,7 +82,6 @@ def detect_platform(url: str) -> dict:
                 "message": "Invalid URL format.",
             }
 
-        # Reject embedded credentials such as user:password@host.
         if parsed.username is not None or parsed.password is not None:
             return {
                 "valid": False,
@@ -78,7 +89,6 @@ def detect_platform(url: str) -> dict:
                 "message": "URLs containing credentials are not allowed.",
             }
 
-        # Reject unexpected ports.
         if parsed.port not in (None, 443):
             return {
                 "valid": False,
@@ -88,15 +98,15 @@ def detect_platform(url: str) -> dict:
 
         hostname = parsed.hostname.lower().rstrip(".")
 
-        # Exact hostname matching prevents lookalike domains such as
-        # instagram.com.example.org from being recognized as Instagram.
         platform = PLATFORM_HOSTS.get(hostname)
 
         if platform is None:
             return {
                 "valid": False,
                 "platform": None,
-                "message": "Unsupported platform. Use TikTok, Facebook, or Instagram.",
+                "message": (
+                    "Unsupported platform. Use TikTok, Facebook, or Instagram."
+                ),
             }
 
         if not parsed.path or parsed.path == "/":

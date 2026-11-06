@@ -4,3 +4,4 @@ pydantic-settings
 yt-dlp
 
 curl-cffi>=0.10,<0.17
+slowapi>=0.1.9,<1.0.0
