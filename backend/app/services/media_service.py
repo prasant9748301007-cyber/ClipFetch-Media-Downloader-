@@ -7,8 +7,11 @@ import yt_dlp
 from yt_dlp.networking.impersonate import ImpersonateTarget
 
 from app.services.platform_detector import detect_platform
-
-
+from app.services.egress_proxy import get_egress_proxy_options
+from app.services.network_security import (
+    NetworkSecurityError,
+    validate_public_host,
+)
 logger = logging.getLogger(__name__)
 
 # Metadata resource limits.
@@ -29,12 +32,10 @@ class MediaServiceError(Exception):
     """Raised when metadata cannot be retrieved safely."""
 
 
+
 def _extract_metadata(url: str) -> dict:
     """
     Extract metadata without downloading the media.
-
-    This function must only be used for URLs that pass
-    application validation and safety checks.
     """
 
     options = {
@@ -48,13 +49,19 @@ def _extract_metadata(url: str) -> dict:
         "ignoreerrors": False,
     }
 
-    # TikTok requires browser impersonation.
-    if detect_platform(url).get("platform") == "TikTok":
-        options["impersonate"] = ImpersonateTarget.from_str(
-            "chrome-136"
-        )
-
     try:
+        # Configure outbound proxy when required.
+        options.update(get_egress_proxy_options())
+
+        # TikTok requires browser impersonation.
+        if detect_platform(url).get("platform") == "TikTok":
+            options["impersonate"] = ImpersonateTarget.from_str(
+                "chrome-136"
+            )
+
+        # Validate submitted hostname before metadata extraction.
+        validate_public_host(url)
+
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(url, download=False)
 
@@ -99,6 +106,15 @@ def _extract_metadata(url: str) -> dict:
 
     except MediaServiceError:
         raise
+
+    except NetworkSecurityError as exc:
+        logger.warning(
+            "Metadata request blocked by network security (%s).",
+            type(exc).__name__,
+        )
+        raise MediaServiceError(
+            "This URL resolves to a non-public or unsafe network address."
+        ) from exc
 
     except Exception as exc:
         logger.warning(

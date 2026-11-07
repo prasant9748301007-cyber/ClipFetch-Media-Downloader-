@@ -11,8 +11,11 @@ import yt_dlp
 
 from yt_dlp.networking.impersonate import ImpersonateTarget
 from app.services.platform_detector import detect_platform
-
-
+from app.services.egress_proxy import get_egress_proxy_options
+from app.services.network_security import (
+    NetworkSecurityError,
+    validate_public_host,
+)
 logger = logging.getLogger(__name__)
 
 DOWNLOAD_TIMEOUT = 180
@@ -64,12 +67,18 @@ def _validate_url(url: str) -> None:
             "This media URL is not supported."
         )
 
-
 def _get_format_selector(
     url: str,
     format_id: str,
 ) -> str:
     """Select the requested video quality and include audio when available."""
+
+    try:
+        validate_public_host(url)
+    except NetworkSecurityError as exc:
+        raise DownloadServiceError(
+            "This URL resolves to an unsafe network address."
+        ) from exc
 
     info_options = {
         "quiet": True,
@@ -80,8 +89,19 @@ def _get_format_selector(
         "retries": 0,
         "extractor_retries": 0,
     }
+
+    try:
+        info_options.update(get_egress_proxy_options())
+    except NetworkSecurityError as exc:
+        raise DownloadServiceError(
+            "Outbound proxy configuration is invalid."
+        ) from exc
+
     if detect_platform(url).get("platform") == "TikTok":
-        info_options["impersonate"] = ImpersonateTarget.from_str("chrome-136")
+        info_options["impersonate"] = ImpersonateTarget.from_str(
+            "chrome-136"
+        )
+
     with yt_dlp.YoutubeDL(info_options) as ydl:
         info = ydl.extract_info(url, download=False)
 
@@ -119,9 +139,7 @@ def _get_format_selector(
     if has_audio:
         return format_id
 
-    # Video-only format: combine it with the best available audio.
     return f"{format_id}+bestaudio/best"
-
 
 def _convert_to_mp4(input_path: Path, output_path: Path) -> None:
     """Convert media to a broadly compatible H.264/AAC MP4 file."""
@@ -298,11 +316,27 @@ def _download_media(
         "max_filesize": MAX_FILE_SIZE,
         "progress_hooks": [
             lambda progress: _check_download_size(progress, output_dir)
-        ],        "overwrites": True,
+        ],
+        "overwrites": True,
     }
+
     if detect_platform(url).get("platform") == "TikTok":
-       options["impersonate"] = ImpersonateTarget.from_str("chrome-136")
+        options["impersonate"] = ImpersonateTarget.from_str(
+            "chrome-136"
+        )
+
     try:
+        # Configure outbound proxy.
+        try:
+            options.update(get_egress_proxy_options())
+        except NetworkSecurityError as exc:
+            raise DownloadServiceError(
+                "Outbound proxy configuration is invalid."
+            ) from exc
+
+        # Recheck the submitted hostname before the actual download.
+        validate_public_host(url)
+
         with yt_dlp.YoutubeDL(options) as ydl:
             ydl.download([url])
 
@@ -313,7 +347,6 @@ def _download_media(
             and item.name.startswith("clipfetch_source.")
             and item.suffix not in {".part", ".ytdl"}
         ]
-
         if len(candidates) != 1:
             raise DownloadServiceError(
                 "The download did not produce one complete media file."
@@ -356,6 +389,15 @@ def _download_media(
 
     except DownloadServiceError:
         raise
+
+    except NetworkSecurityError as exc:
+        logger.warning(
+            "Download blocked by network security (%s).",
+            type(exc).__name__,
+        )
+        raise DownloadServiceError(
+            "This URL resolves to a non-public or unsafe network address."
+        ) from exc
 
     except Exception as exc:
         logger.warning(
