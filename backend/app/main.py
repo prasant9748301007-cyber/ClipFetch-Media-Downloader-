@@ -1,5 +1,6 @@
 import os
-
+import logging
+import shutil
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -33,6 +34,18 @@ app = FastAPI(
     description="Backend API for the ClipFetch media downloader.",
     version="1.0.0",
 )
+logger = logging.getLogger(__name__)
+
+
+@app.on_event("startup")
+async def check_media_tools():
+    for tool in ("ffmpeg", "ffprobe"):
+        path = shutil.which(tool)
+        logger.warning(
+            "ClipFetch diagnostic: %s = %s",
+            tool,
+            path or "NOT FOUND",
+        )
 
 app.add_middleware(
     CORSMiddleware,
