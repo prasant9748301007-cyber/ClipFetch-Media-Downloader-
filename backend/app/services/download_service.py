@@ -142,45 +142,136 @@ def _get_format_selector(
     return f"{format_id}+bestaudio/best"
 
 def _convert_to_mp4(input_path: Path, output_path: Path) -> None:
-    """Convert media to a broadly compatible H.264/AAC MP4 file."""
+    """Create a compatible MP4, avoiding unnecessary video re-encoding."""
 
     ffmpeg_path = shutil.which("ffmpeg")
+    ffprobe_path = shutil.which("ffprobe")
 
     if not ffmpeg_path:
         raise DownloadServiceError(
             "FFmpeg is not installed or is not available in PATH."
         )
 
-    command = [
+    def valid_output() -> bool:
+        return (
+            output_path.is_file()
+            and output_path.stat().st_size > 0
+        )
+
+    # Check whether the source already uses broadly compatible codecs.
+    can_copy = False
+
+    if ffprobe_path:
+        probe_command = [
+            ffprobe_path,
+            "-v", "error",
+            "-show_entries", "stream=codec_type,codec_name",
+            "-of", "json",
+            str(input_path),
+        ]
+
+        try:
+            probe = subprocess.run(
+                probe_command,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+
+            if probe.returncode == 0:
+                import json
+
+                streams = json.loads(probe.stdout).get("streams", [])
+                video_codecs = [
+                    stream.get("codec_name")
+                    for stream in streams
+                    if stream.get("codec_type") == "video"
+                ]
+                audio_codecs = [
+                    stream.get("codec_name")
+                    for stream in streams
+                    if stream.get("codec_type") == "audio"
+                ]
+
+                can_copy = (
+                    bool(video_codecs)
+                    and all(codec == "h264" for codec in video_codecs)
+                    and all(codec == "aac" for codec in audio_codecs)
+                )
+
+        except (
+            subprocess.TimeoutExpired,
+            OSError,
+            ValueError,
+            TypeError,
+        ):
+            logger.warning(
+                "Could not inspect source codecs; using H.264/AAC conversion."
+            )
+
+    # Fast path: copy compatible streams without re-encoding.
+    if can_copy:
+        copy_command = [
+            ffmpeg_path,
+            "-y",
+            "-i", str(input_path),
+            "-map", "0:v:0",
+            "-map", "0:a:0?",
+            "-c", "copy",
+            "-movflags", "+faststart",
+            "-f", "mp4",
+            str(output_path),
+        ]
+
+        try:
+            result = subprocess.run(
+                copy_command,
+                capture_output=True,
+                text=True,
+                timeout=FFMPEG_TIMEOUT,
+                check=False,
+            )
+
+            if result.returncode == 0 and valid_output():
+                logger.info("MP4 created using fast stream-copy.")
+                return
+
+            logger.warning(
+                "MP4 stream-copy failed; falling back to re-encoding: %s",
+                result.stderr[-1500:],
+            )
+
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "MP4 stream-copy timed out; falling back to re-encoding."
+            )
+
+        output_path.unlink(missing_ok=True)
+
+    # Compatibility fallback: encode video as H.264 and audio as AAC.
+    encode_command = [
         ffmpeg_path,
         "-y",
         "-i", str(input_path),
-
-        # Select the first video stream and optional first audio stream.
         "-map", "0:v:0",
         "-map", "0:a:0?",
-
-        # Broadly compatible video and audio codecs.
         "-threads", "2",
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-crf", "23",
         "-pix_fmt", "yuv420p",
         "-profile:v", "main",
-
         "-c:a", "aac",
         "-b:a", "128k",
-
-        # Improve playback compatibility.
         "-movflags", "+faststart",
         "-max_muxing_queue_size", "1024",
-
         str(output_path),
     ]
 
     try:
         result = subprocess.run(
-            command,
+            encode_command,
             capture_output=True,
             text=True,
             timeout=FFMPEG_TIMEOUT,
@@ -197,12 +288,13 @@ def _convert_to_mp4(input_path: Path, output_path: Path) -> None:
                 "a supported video stream."
             )
 
-        if not output_path.is_file() or output_path.stat().st_size == 0:
+        if not valid_output():
             raise DownloadServiceError(
                 "FFmpeg did not produce a valid MP4 file."
             )
 
     except subprocess.TimeoutExpired as exc:
+        output_path.unlink(missing_ok=True)
         raise DownloadServiceError(
             "Video conversion took too long. Please try again."
         ) from exc

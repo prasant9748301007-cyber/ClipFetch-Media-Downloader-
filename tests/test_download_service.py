@@ -140,3 +140,94 @@ def test_audio_conversion_error_is_propagated(
             "audio_mp3",
             tmp_path,
         )
+
+
+def test_mp4_uses_stream_copy_for_h264_aac(monkeypatch, tmp_path):
+    import json
+    from types import SimpleNamespace
+
+    input_path = tmp_path / "source.mp4"
+    output_path = tmp_path / "output.mp4"
+    input_path.write_bytes(b"fake source")
+
+    monkeypatch.setattr(
+        service.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}",
+    )
+
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+
+        if command[0].endswith("ffprobe"):
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({
+                    "streams": [
+                        {"codec_type": "video", "codec_name": "h264"},
+                        {"codec_type": "audio", "codec_name": "aac"},
+                    ]
+                }),
+                stderr="",
+            )
+
+        output_path.write_bytes(b"fake mp4")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(service.subprocess, "run", fake_run)
+
+    service._convert_to_mp4(input_path, output_path)
+
+    assert output_path.is_file()
+    assert output_path.read_bytes() == b"fake mp4"
+    assert any("-c" in command and "copy" in command for command in commands)
+    assert not any("libx264" in command for command in commands)
+
+
+def test_mp4_falls_back_to_encoding_for_incompatible_codecs(
+    monkeypatch,
+    tmp_path,
+):
+    import json
+    from types import SimpleNamespace
+
+    input_path = tmp_path / "source.webm"
+    output_path = tmp_path / "output.mp4"
+    input_path.write_bytes(b"fake source")
+
+    monkeypatch.setattr(
+        service.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}",
+    )
+
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+
+        if command[0].endswith("ffprobe"):
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({
+                    "streams": [
+                        {"codec_type": "video", "codec_name": "vp9"},
+                        {"codec_type": "audio", "codec_name": "opus"},
+                    ]
+                }),
+                stderr="",
+            )
+
+        output_path.write_bytes(b"converted mp4")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(service.subprocess, "run", fake_run)
+
+    service._convert_to_mp4(input_path, output_path)
+
+    assert output_path.is_file()
+    assert output_path.read_bytes() == b"converted mp4"
+    assert any("libx264" in command for command in commands)
+    assert any("aac" in command for command in commands)
