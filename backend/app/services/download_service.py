@@ -207,6 +207,12 @@ def _convert_to_mp4(input_path: Path, output_path: Path) -> None:
                     and all(codec == "h264" for codec in video_codecs)
                     and all(codec == "aac" for codec in audio_codecs)
                 )
+                logger.warning(
+                    "ClipFetch codec diagnostic | video=%s | audio=%s | stream_copy=%s",
+                    video_codecs,
+                    audio_codecs,
+                    can_copy,
+                )
 
         except (
             subprocess.TimeoutExpired,
