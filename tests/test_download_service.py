@@ -9,8 +9,14 @@ from app.services import download_service as service
 class FakeYoutubeDL:
     """Simulate yt-dlp without downloading real media."""
 
+    instances = []
+
     def __init__(self, options):
         self.options = options
+        self.params = dict(options)
+        self.extract_count = 0
+        self.process_count = 0
+        self.__class__.instances.append(self)
 
     def __enter__(self):
         return self
@@ -18,7 +24,34 @@ class FakeYoutubeDL:
     def __exit__(self, exc_type, exc_value, traceback):
         return False
 
+    def extract_info(self, url, download=False, process=True):
+        self.extract_count += 1
+        return {
+            "_type": "video",
+            "formats": [
+                {
+                    "format_id": "720p",
+                    "vcodec": "h264",
+                    "acodec": "none",
+                }
+            ],
+        }
+
+    def process_ie_result(self, info, download=True):
+        self.process_count += 1
+        assert download is True
+        assert self.params["format"] == (
+            "bestvideo[vcodec~='^(avc1|h264)']"
+            "+bestaudio[acodec~='^(mp4a|aac)']/"
+            "best[vcodec~='^(avc1|h264)'][acodec~='^(mp4a|aac)']/"
+            "bestvideo+bestaudio/best"
+        )
+        self._write_source_file()
+
     def download(self, urls):
+        self._write_source_file()
+
+    def _write_source_file(self):
         output_template = self.options["outtmpl"]
         source_path = Path(
             output_template.replace("%(ext)s", "webm")
@@ -62,8 +95,13 @@ def test_video_download_creates_mp4(monkeypatch, tmp_path):
 
     monkeypatch.setattr(
         service,
-        "_get_format_selector",
-        lambda url, format_id: "bestvideo+bestaudio/best",
+        "validate_public_host",
+        lambda url: None,
+    )
+    monkeypatch.setattr(
+        service,
+        "get_egress_proxy_options",
+        lambda: {},
     )
 
     def fake_mp4_conversion(input_path, output_path):
@@ -84,6 +122,11 @@ def test_video_download_creates_mp4(monkeypatch, tmp_path):
     assert result.name == "clipfetch_media.mp4"
     assert result.is_file()
     assert result.read_bytes() == b"fake mp4 video"
+
+    # The video URL is extracted once, then the result is processed directly.
+    fake_ydl = FakeYoutubeDL.instances[-1]
+    assert fake_ydl.extract_count == 1
+    assert fake_ydl.process_count == 1
 
 
 def test_download_rejects_oversized_source(monkeypatch, tmp_path):
@@ -284,10 +327,23 @@ def test_best_quality_prefers_h264_aac(monkeypatch):
         FakeMetadataYoutubeDL,
     )
 
-    selector = service._get_format_selector(
-        "https://www.instagram.com/p/example/",
-        "best",
-    )
+    info = {
+        "_type": "video",
+        "formats": [
+            {
+                "format_id": "avc1",
+                "vcodec": "avc1.640028",
+                "acodec": "none",
+            },
+            {
+                "format_id": "aac",
+                "vcodec": "none",
+                "acodec": "mp4a.40.2",
+            },
+        ],
+    }
+
+    selector = service._get_format_selector(info, "best")
 
     assert "bestvideo[vcodec~=" in selector
     assert "bestaudio[acodec~=" in selector
@@ -295,3 +351,37 @@ def test_best_quality_prefers_h264_aac(monkeypatch):
 
     with real_youtube_dl({"quiet": True}) as ydl:
         ydl.build_format_selector(selector)
+
+
+def test_selected_video_format_is_validated_from_existing_info():
+    info = {
+        "_type": "video",
+        "formats": [
+            {
+                "format_id": "720p",
+                "vcodec": "avc1",
+                "acodec": "none",
+            },
+            {
+                "format_id": "audio",
+                "vcodec": "none",
+                "acodec": "mp4a",
+            },
+        ],
+    }
+
+    assert service._get_format_selector(info, "720p") == (
+        "720p+bestaudio/best"
+    )
+
+    with pytest.raises(
+        service.DownloadServiceError,
+        match="does not contain a video",
+    ):
+        service._get_format_selector(info, "audio")
+
+    with pytest.raises(
+        service.DownloadServiceError,
+        match="no longer available",
+    ):
+        service._get_format_selector(info, "missing")
