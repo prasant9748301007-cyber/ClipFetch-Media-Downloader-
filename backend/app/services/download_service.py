@@ -69,49 +69,10 @@ def _validate_url(url: str) -> None:
         )
 
 def _get_format_selector(
-    url: str,
+    info: dict,
     format_id: str,
 ) -> str:
-    """Select the requested video quality and include audio when available."""
-
-    try:
-        validate_public_host(url)
-    except NetworkSecurityError as exc:
-        raise DownloadServiceError(
-            "This URL resolves to an unsafe network address."
-        ) from exc
-
-    info_options = {
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-        "skip_download": True,
-        "socket_timeout": 10,
-        "retries": 0,
-        "extractor_retries": 0,
-    }
-
-    try:
-        info_options.update(get_egress_proxy_options())
-    except NetworkSecurityError as exc:
-        raise DownloadServiceError(
-            "Outbound proxy configuration is invalid."
-        ) from exc
-
-    if detect_platform(url).get("platform") == "TikTok":
-        info_options["impersonate"] = ImpersonateTarget.from_str(
-            "chrome-136"
-        )
-
-    metadata_started = time.perf_counter()
-
-    with yt_dlp.YoutubeDL(info_options) as ydl:
-        info = ydl.extract_info(url, download=False)
-
-    logger.warning(
-        "ClipFetch timing | metadata extraction: %.2f seconds",
-        time.perf_counter() - metadata_started,
-    )
+    """Select a format from metadata already extracted by the download worker."""
 
     if not info or info.get("_type") in {"playlist", "multi_video"}:
         raise DownloadServiceError(
@@ -409,14 +370,8 @@ def _download_media(
 
     is_audio = format_id == "audio_mp3"
 
-    format_selector = (
-        "bestaudio/best"
-        if is_audio
-        else _get_format_selector(url, format_id)
-    )
-
     options = {
-        "format": format_selector,
+        "format": "bestaudio/best" if is_audio else "best",
         "outtmpl": str(output_dir / "clipfetch_source.%(ext)s"),
         "noplaylist": True,
         "quiet": True,
@@ -448,10 +403,31 @@ def _download_media(
         # Recheck the submitted hostname before the actual download.
         validate_public_host(url)
 
-        download_started = time.perf_counter()
-
         with yt_dlp.YoutubeDL(options) as ydl:
-            ydl.download([url])
+            if is_audio:
+                download_started = time.perf_counter()
+                ydl.download([url])
+            else:
+                metadata_started = time.perf_counter()
+                info = ydl.extract_info(
+                    url,
+                    download=False,
+                    process=False,
+                )
+                logger.warning(
+                    "ClipFetch timing | metadata extraction: %.2f seconds",
+                    time.perf_counter() - metadata_started,
+                )
+
+                # Reuse the extracted result instead of asking yt-dlp to
+                # extract the same URL again during the download.
+                ydl.params["format"] = _get_format_selector(
+                    info,
+                    format_id,
+                )
+
+                download_started = time.perf_counter()
+                ydl.process_ie_result(info, download=True)
 
         logger.warning(
             "ClipFetch timing | yt-dlp download: %.2f seconds",
