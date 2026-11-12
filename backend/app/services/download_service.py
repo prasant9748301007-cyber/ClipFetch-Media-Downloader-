@@ -119,7 +119,12 @@ def _get_format_selector(
         )
 
     if format_id == "best":
-        return "bestvideo+bestaudio/best"
+        return (
+            "bestvideo[vcodec~='^(avc1|h264)']"
+            "+bestaudio[acodec~='^(mp4a|aac)']/"
+            "best[vcodec~='^(avc1|h264)'][acodec~='^(mp4a|aac)']/"
+            "bestvideo+bestaudio/best"
+        )
 
     selected = next(
         (

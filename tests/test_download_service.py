@@ -231,3 +231,67 @@ def test_mp4_falls_back_to_encoding_for_incompatible_codecs(
     assert output_path.read_bytes() == b"converted mp4"
     assert any("libx264" in command for command in commands)
     assert any("aac" in command for command in commands)
+
+
+def test_best_quality_prefers_h264_aac(monkeypatch):
+    real_youtube_dl = service.yt_dlp.YoutubeDL
+
+    monkeypatch.setattr(
+        service,
+        "validate_public_host",
+        lambda url: None,
+    )
+    monkeypatch.setattr(
+        service,
+        "get_egress_proxy_options",
+        lambda: {},
+    )
+    monkeypatch.setattr(
+        service,
+        "detect_platform",
+        lambda url: {"platform": "Instagram"},
+    )
+
+    class FakeMetadataYoutubeDL:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def extract_info(self, url, download=False):
+            return {
+                "formats": [
+                    {
+                        "format_id": "avc1",
+                        "vcodec": "avc1.640028",
+                        "acodec": "none",
+                    },
+                    {
+                        "format_id": "aac",
+                        "vcodec": "none",
+                        "acodec": "mp4a.40.2",
+                    },
+                ]
+            }
+
+    monkeypatch.setattr(
+        service.yt_dlp,
+        "YoutubeDL",
+        FakeMetadataYoutubeDL,
+    )
+
+    selector = service._get_format_selector(
+        "https://www.instagram.com/p/example/",
+        "best",
+    )
+
+    assert "bestvideo[vcodec~=" in selector
+    assert "bestaudio[acodec~=" in selector
+    assert "bestvideo+bestaudio/best" in selector
+
+    with real_youtube_dl({"quiet": True}) as ydl:
+        ydl.build_format_selector(selector)
