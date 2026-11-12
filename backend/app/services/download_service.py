@@ -108,7 +108,7 @@ def _get_format_selector(
     with yt_dlp.YoutubeDL(info_options) as ydl:
         info = ydl.extract_info(url, download=False)
 
-    logger.info(
+    logger.warning(
         "ClipFetch timing | metadata extraction: %.2f seconds",
         time.perf_counter() - metadata_started,
     )
@@ -442,7 +442,7 @@ def _download_media(
         with yt_dlp.YoutubeDL(options) as ydl:
             ydl.download([url])
 
-        logger.info(
+        logger.warning(
             "ClipFetch timing | yt-dlp download: %.2f seconds",
             time.perf_counter() - download_started,
         )
@@ -494,7 +494,7 @@ def _download_media(
 
             converted_path.replace(final_path)
 
-        logger.info(
+        logger.warning(
             "ClipFetch timing | media conversion: %.2f seconds",
             time.perf_counter() - conversion_started,
         )
