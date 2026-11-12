@@ -4,6 +4,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -102,8 +103,15 @@ def _get_format_selector(
             "chrome-136"
         )
 
+    metadata_started = time.perf_counter()
+
     with yt_dlp.YoutubeDL(info_options) as ydl:
         info = ydl.extract_info(url, download=False)
+
+    logger.info(
+        "ClipFetch timing | metadata extraction: %.2f seconds",
+        time.perf_counter() - metadata_started,
+    )
 
     if not info or info.get("_type") in {"playlist", "multi_video"}:
         raise DownloadServiceError(
@@ -429,8 +437,15 @@ def _download_media(
         # Recheck the submitted hostname before the actual download.
         validate_public_host(url)
 
+        download_started = time.perf_counter()
+
         with yt_dlp.YoutubeDL(options) as ydl:
             ydl.download([url])
+
+        logger.info(
+            "ClipFetch timing | yt-dlp download: %.2f seconds",
+            time.perf_counter() - download_started,
+        )
 
         candidates = [
             item
@@ -450,6 +465,8 @@ def _download_media(
             raise DownloadServiceError(
                 "The downloaded file exceeds the size limit."
             )
+
+        conversion_started = time.perf_counter()
 
         if is_audio:
             final_path = output_dir / "clipfetch_audio.mp3"
@@ -476,6 +493,11 @@ def _download_media(
                 )
 
             converted_path.replace(final_path)
+
+        logger.info(
+            "ClipFetch timing | media conversion: %.2f seconds",
+            time.perf_counter() - conversion_started,
+        )
 
         return final_path
 
