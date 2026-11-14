@@ -31,12 +31,27 @@ _DOWNLOAD_SEMAPHORE = asyncio.Semaphore(
     MAX_CONCURRENT_DOWNLOADS
 )
 
-DOWNLOAD_DIR = Path(
-    os.getenv(
-        "CLIPFETCH_TEMP_DIR",
-        str(Path(tempfile.gettempdir()) / "clipfetch-downloads"),
+def _get_download_dir(configured: str | None = None) -> Path:
+    """Return an absolute, configured temporary-file parent directory."""
+
+    raw_path = (
+        os.getenv("CLIPFETCH_TEMP_DIR", "")
+        if configured is None
+        else configured
+    ).strip()
+    directory = (
+        Path(raw_path).expanduser()
+        if raw_path
+        else Path(tempfile.gettempdir()) / "clipfetch-downloads"
     )
-).expanduser()
+
+    if not directory.is_absolute():
+        raise ValueError("CLIPFETCH_TEMP_DIR must be an absolute path.")
+
+    return directory
+
+
+DOWNLOAD_DIR = _get_download_dir()
 
 
 class DownloadServiceError(Exception):

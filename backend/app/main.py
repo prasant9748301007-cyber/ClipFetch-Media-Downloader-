@@ -1,6 +1,7 @@
 import os
 import logging
 import shutil
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -30,16 +31,11 @@ def get_allowed_origins() -> list[str]:
     return origins
 
 
-app = FastAPI(
-    title="ClipFetch API",
-    description="Backend API for the ClipFetch media downloader.",
-    version="1.0.0",
-)
 logger = logging.getLogger(__name__)
 
 
-@app.on_event("startup")
-async def check_media_tools():
+@asynccontextmanager
+async def lifespan(_: FastAPI):
     for tool in ("ffmpeg", "ffprobe"):
         path = shutil.which(tool)
         logger.warning(
@@ -47,6 +43,15 @@ async def check_media_tools():
             tool,
             path or "NOT FOUND",
         )
+    yield
+
+
+app = FastAPI(
+    title="ClipFetch API",
+    description="Backend API for the ClipFetch media downloader.",
+    version="1.0.0",
+    lifespan=lifespan,
+)
 
 app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(

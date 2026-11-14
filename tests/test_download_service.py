@@ -464,3 +464,17 @@ def test_download_removes_source_after_conversion(monkeypatch, tmp_path):
 
     assert result.is_file()
     assert not (tmp_path / "clipfetch_source.webm").exists()
+
+
+
+def test_empty_temp_directory_setting_uses_system_temp(monkeypatch):
+    monkeypatch.setenv("CLIPFETCH_TEMP_DIR", "")
+
+    assert service._get_download_dir() == (
+        Path(service.tempfile.gettempdir()) / "clipfetch-downloads"
+    )
+
+
+def test_temp_directory_setting_must_be_absolute():
+    with pytest.raises(ValueError, match="absolute path"):
+        service._get_download_dir("relative/temp")
