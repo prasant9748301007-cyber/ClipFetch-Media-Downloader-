@@ -1,202 +1,148 @@
-# 🚀 ClipFetch
+# ClipFetch
 
-### Download Your Media, Your Way.
+ClipFetch is a small FastAPI service and static web interface for downloading media that the user owns or is authorized to save. The backend uses yt-dlp for extraction and FFmpeg for MP4/MP3 output.
 
-ClipFetch is a modern media downloader built with **Python FastAPI, HTML5, CSS3, and JavaScript**. It provides a single platform for downloading authorized video and audio content from TikTok, Facebook, and Instagram.
+## Current features
 
-## ✨ Features
+- URL support for TikTok, Instagram, and Facebook hostnames listed in `backend/app/services/platform_detector.py`.
+- Metadata lookup and video downloads in MP4.
+- Audio-only downloads converted to MP3 at 192 kbps and 44.1 kHz.
+- A responsive HTML/CSS/JavaScript interface with dark and light themes.
+- HTTPS, platform-host allowlisting, public-address DNS checks, request-size limits, bounded processing concurrency, and private per-request temporary directories.
 
-- 📹 **Multi-Platform Support** – TikTok, Facebook, and Instagram.
-- 🎬 **Video Download** – Download supported videos in MP4 format.
-- 🎵 **Audio Download** – Extract and download audio in MP3 format.
-- 🔗 **URL-Based Download** – Paste a supported media URL.
-- 🖥️ **Modern UI** – Clean and intuitive user interface.
-- 📱 **Responsive Design** – Supports different screen sizes.
-- ⚡ **Fast Backend** – Powered by Python FastAPI.
-- 🧪 **Automated Testing** – Tests using Pytest.
+ClipFetch does not bypass authentication, access controls, DRM, or platform restrictions. Use it only for media you are authorized to download and follow the source platform's terms.
 
-## 🛠️ Technology Stack
+## Architecture and current scope
 
-| Technology | Purpose |
-|---|---|
-| Python | Backend programming |
-| FastAPI | Backend API framework |
-| Pydantic Settings | Application configuration |
-| HTML5 | Frontend structure |
-| CSS3 | Styling and responsive design |
-| JavaScript | Frontend functionality |
-| yt-dlp | Media extraction |
-| curl-cffi | HTTP client support |
-| FFmpeg | Media conversion |
-| Pytest | Automated testing |
-| Git & GitHub | Version control |
+- `frontend/`: static browser interface.
+- `backend/app/api/`: FastAPI endpoints.
+- `backend/app/services/`: URL checks, metadata extraction, yt-dlp downloads, and FFmpeg conversion.
+- `tests/`: backend unit/API tests and small local FFmpeg integration tests.
+- The database and schema packages are empty placeholders. The current application does not use SQLite, store download history, or persist user data.
+- The repository does not include a Render or Cloudflare configuration. A Dockerfile is provided for a reproducible backend image.
 
-## 📂 Project Structure
+## Requirements
 
-```text
-ClipFetch/
-│
-├── backend/
-│   ├── app/
-│   │   ├── api/
-│   │   │   └── routes.py
-│   │   ├── database/
-│   │   ├── schemas/
-│   │   ├── services/
-│   │   │   ├── download_service.py
-│   │   │   ├── media_service.py
-│   │   │   └── platform_detector.py
-│   │   └── main.py
-│   │
-│   ├── temp/
-│   ├── .env.example
-│   └── requirements.txt
-│
-├── frontend/
-│   ├── css/
-│   │   └── style.css
-│   ├── js/
-│   │   ├── app.js
-│   │   └── config.js
-│   ├── index.html
-│   ├── privacy.html
-│   └── terms.html
-│
-├── tests/
-│   ├── test_api.py
-│   ├── test_download_service.py
-│   └── test_platform_detector.py
-│
-├── .gitignore
-├── LICENSE
-└── README.md
-```
+- Python 3.12.
+- FFmpeg and ffprobe on the backend host.
+- Node.js 20 only to run the frontend JavaScript syntax check.
+- A browser for the static frontend.
 
-## ⚙️ Installation and Setup
+The backend uses the pinned packages in `backend/requirements.txt`. yt-dlp's supported platforms and extraction behavior can change as source sites change.
 
-Follow these steps to run ClipFetch locally.
+## Local setup
 
-### 1. Clone the Repository
-
-```bash
-git clone https://github.com/prasant9748301007-cyber/ClipFetch-Media-Downloader-.git ClipFetch
-cd ClipFetch
-```
-
-### 2. Install FFmpeg
-
-For Ubuntu or WSL:
+Install FFmpeg on Ubuntu or WSL2:
 
 ```bash
 sudo apt update
 sudo apt install ffmpeg
-```
-
-Verify installation:
-
-```bash
 ffmpeg -version
+ffprobe -version
 ```
 
-### 3. Create a Virtual Environment
+Set up and start the backend:
 
 ```bash
 cd backend
-python3 -m venv venv
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+export CLIPFETCH_FRONTEND_ORIGINS="http://127.0.0.1:5500,http://localhost:5500"
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-### 4. Activate the Virtual Environment
+In another terminal, start the static frontend:
 
 ```bash
-source venv/bin/activate
-```
-
-### 5. Install Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-For running automated tests, install Pytest if it is not already installed:
-
-```bash
-pip install pytest
-```
-
-### 6. Start the Backend Server
-
-From the backend directory:
-
-```bash
-uvicorn app.main:app --reload
-```
-
-Backend URL:
-
-http://127.0.0.1:8000
-
-Interactive API Documentation:
-
-http://127.0.0.1:8000/docs
-
-### 7. Start the Frontend
-
-Open a second terminal:
-
-```bash
-cd ~/ClipFetch/frontend
+cd frontend
 python3 -m http.server 5500
 ```
 
-Open your browser:
+Open `http://127.0.0.1:5500`. The local API URL is `http://127.0.0.1:8000`; the checked-in `frontend/js/config.js` currently points to the Render API, so change it to the local API URL when developing locally.
 
-http://127.0.0.1:5500
+The environment variables in `backend/.env.example` are examples only. The application reads process environment variables and does not load a `.env` file automatically.
 
-## 🔌 API Endpoints
+## Environment variables
 
-| Method | Endpoint | Description |
+| Variable | Purpose |
+|---|---|
+| `CLIPFETCH_FRONTEND_ORIGINS` | Comma-separated exact origins allowed by CORS. Set the deployed frontend origin without a path. |
+| `CLIPFETCH_TEMP_DIR` | Parent directory for private temporary download directories. Defaults to the system temporary directory plus `clipfetch-downloads`. |
+| `CLIPFETCH_EGRESS_PROXY` | Optional loopback HTTP proxy URL, such as `http://127.0.0.1:3128`. |
+| `CLIPFETCH_REQUIRE_EGRESS_PROXY` | When `true`, requests fail closed unless a valid loopback proxy is configured. |
+
+The proxy settings do not start a proxy. A local proxy service must be deployed separately if strict egress filtering is required.
+
+## API
+
+All POST endpoints accept JSON.
+
+| Method | Endpoint | Purpose |
 |---|---|---|
-| GET | `/` | General application endpoint |
-| GET | `/api/health` | Check backend health |
-| POST | `/api/validate-url` | Validate media URL |
-| POST | `/api/metadata` | Retrieve media information |
-| POST | `/api/download` | Download supported media |
+| GET | `/` | Basic service information. |
+| GET | `/api/health` | Liveness check. |
+| POST | `/api/validate-url` | Check HTTPS URL syntax and supported platform. |
+| POST | `/api/metadata` | Extract title, duration, thumbnail, uploader, and available formats. |
+| POST | `/api/download` | Download the selected format and return a streamed MP4 or MP3 file. |
 
-For request parameters and response details, visit:
+Example request:
 
-http://127.0.0.1:8000/docs
+```json
+{"url":"https://www.tiktok.com/@creator/video/123456"}
+```
 
-## 🧪 Running Tests
+Download requests may include `format_id`; use `audio_mp3` for MP3 output. Video format IDs are revalidated against fresh extraction data before download.
 
-From the backend directory with the virtual environment activated:
+The API returns HTTP 413 for request bodies above 8 KiB and HTTP 400 for invalid or unavailable media. The interactive API schema is at `/docs` while the service is running.
+
+## Resource limits and file handling
+
+- One Uvicorn worker is used by the provided Docker image so in-process concurrency limits remain meaningful.
+- At most two media workers and three metadata workers run per process. Requests wait up to five seconds for a slot.
+- Metadata extraction has a 60-second timeout; download processing has a 180-second timeout.
+- Source and final files are limited to 100 MiB. FFmpeg is also given an output size cap.
+- Each request uses a private temporary directory. The original source file is removed after conversion; the final response file is removed after the streamed response completes.
+- Compatible H.264/AAC streams are remuxed without re-encoding. If only one stream is compatible, the other stream is encoded. Remaining formats are converted to H.264/AAC with one encoder thread.
+- yt-dlp uses a small, finite retry count with short exponential delays. Fragment concurrency remains at yt-dlp's default of one.
+
+The concurrency controls are process-local. Adding workers or scaling to multiple instances increases aggregate concurrency and temporary disk use; measure resource usage before changing either.
+
+## Testing
+
+From the repository root:
 
 ```bash
+cd backend
+python -m pip install -r requirements.txt pytest
 python -m pytest ../tests -v
 ```
 
-## 🔒 Responsible Usage
+The test suite includes mocked extractor/API unit tests, URL and network-security checks, resource-limit tests, and local FFmpeg integration tests using generated media. The GitHub Actions workflow runs backend tests, JavaScript syntax checks, and a Docker image build.
 
-ClipFetch is intended for downloading media that users own or are authorized to download.
+Mocked tests do not prove that TikTok, Instagram, or Facebook will serve a particular URL. Platform behavior must be checked separately with user-authorized public test media, and failures may be caused by platform policy, availability, regional restrictions, or upstream changes.
 
-- Respect copyright and intellectual property rights.
-- Follow the terms of service of supported platforms.
-- Do not download or redistribute unauthorized content.
-- Use the application responsibly.
+## Deployment
 
-## 🚀 Future Improvements
+Build and run the backend image from the repository root:
 
-- Public cloud deployment.
-- Improved download management.
-- Additional media format options.
-- Enhanced error handling.
-- Performance optimization.
+```bash
+docker build -t clipfetch-backend ./backend
+docker run --rm -p 10000:10000 \
+  -e CLIPFETCH_FRONTEND_ORIGINS="https://your-frontend.example" \
+  clipfetch-backend
+```
 
-## 👨‍💻 Developer
+The container installs FFmpeg/ffprobe, runs as a non-root user, uses one Uvicorn worker, and honors the platform's `PORT` environment variable. Configure the service health check to use `/api/health`. On Render, select the Docker runtime and the backend Dockerfile. Host the frontend separately and set `CLIPFETCH_FRONTEND_ORIGINS` to its exact HTTPS origin.
 
-**ClipFetch** is a full-stack development project created to explore Python backend development, API integration, frontend development, and media processing.
+The repository does not set a Render plan, Cloudflare DNS, proxy, firewall, or edge rate limit. Those deployment settings must be reviewed in the service account. The API has concurrency and request-size limits but no per-IP rate limiter; apply an edge rate limit before exposing it publicly. Do not enable `CLIPFETCH_REQUIRE_EGRESS_PROXY=true` unless a filtering loopback proxy is actually running in the container.
 
----
+## Security and known limitations
 
-⭐ If you find this project interesting, consider giving the repository a star!
-
-**Built with ❤️ using Python and JavaScript.**
+- Only HTTPS URLs on the explicit platform hostname allowlist are accepted.
+- DNS results for the submitted hostname are rejected if any address is non-public.
+- yt-dlp and FFmpeg receive argument lists; user URLs and format IDs are not interpolated into shell commands.
+- CORS allows configured origins only; credentials are disabled.
+- No credentials, cookies, or account authentication are accepted by the application.
+- DNS is checked before yt-dlp connects, but the application does not pin resolved addresses or inspect every redirect/CDN connection itself. Strict production SSRF protection therefore requires an outbound filtering proxy or network policy.
+- No live Render resource metrics or authenticated deployment logs are part of this repository checkout, so memory use and production platform behavior must be checked in the service dashboard.

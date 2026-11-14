@@ -385,3 +385,82 @@ def test_selected_video_format_is_validated_from_existing_info():
         match="no longer available",
     ):
         service._get_format_selector(info, "missing")
+
+
+def test_mp4_copies_h264_video_when_audio_needs_transcoding(
+    monkeypatch,
+    tmp_path,
+):
+    import json
+    from types import SimpleNamespace
+
+    input_path = tmp_path / "source.mkv"
+    output_path = tmp_path / "output.mp4"
+    input_path.write_bytes(b"fake source")
+
+    monkeypatch.setattr(
+        service.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}",
+    )
+
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+
+        if command[0].endswith("ffprobe"):
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({
+                    "streams": [
+                        {"codec_type": "video", "codec_name": "h264"},
+                        {"codec_type": "audio", "codec_name": "opus"},
+                    ]
+                }),
+                stderr="",
+            )
+
+        output_path.write_bytes(b"selectively converted mp4")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(service.subprocess, "run", fake_run)
+
+    service._convert_to_mp4(input_path, output_path)
+
+    ffmpeg_command = next(
+        command for command in commands
+        if command[0].endswith("ffmpeg")
+    )
+    assert output_path.is_file()
+    assert ffmpeg_command[ffmpeg_command.index("-c:v") + 1] == "copy"
+    assert ffmpeg_command[ffmpeg_command.index("-c:a") + 1] == "aac"
+    assert "libx264" not in ffmpeg_command
+
+
+def test_download_removes_source_after_conversion(monkeypatch, tmp_path):
+    monkeypatch.setattr(service.yt_dlp, "YoutubeDL", FakeYoutubeDL)
+    monkeypatch.setattr(
+        service,
+        "validate_public_host",
+        lambda url: None,
+    )
+    monkeypatch.setattr(
+        service,
+        "get_egress_proxy_options",
+        lambda: {},
+    )
+    monkeypatch.setattr(
+        service,
+        "_convert_to_mp4",
+        lambda source, output: output.write_bytes(b"fake mp4"),
+    )
+
+    result = service._download_media(
+        "https://www.tiktok.com/@user/video/123456",
+        "best",
+        tmp_path,
+    )
+
+    assert result.is_file()
+    assert not (tmp_path / "clipfetch_source.webm").exists()

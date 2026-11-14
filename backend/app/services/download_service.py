@@ -1,6 +1,6 @@
 import asyncio
 import logging
-import re
+import os
 import shutil
 import subprocess
 import tempfile
@@ -17,6 +17,7 @@ from app.services.network_security import (
     NetworkSecurityError,
     validate_public_host,
 )
+from app.services.retry_policy import get_retry_policy
 logger = logging.getLogger(__name__)
 
 DOWNLOAD_TIMEOUT = 180
@@ -30,7 +31,12 @@ _DOWNLOAD_SEMAPHORE = asyncio.Semaphore(
     MAX_CONCURRENT_DOWNLOADS
 )
 
-DOWNLOAD_DIR = Path(tempfile.gettempdir()) / "clipfetch-downloads"
+DOWNLOAD_DIR = Path(
+    os.getenv(
+        "CLIPFETCH_TEMP_DIR",
+        str(Path(tempfile.gettempdir()) / "clipfetch-downloads"),
+    )
+).expanduser()
 
 
 class DownloadServiceError(Exception):
@@ -116,7 +122,7 @@ def _get_format_selector(
     return f"{format_id}+bestaudio/best"
 
 def _convert_to_mp4(input_path: Path, output_path: Path) -> None:
-    """Create a compatible MP4, avoiding unnecessary video re-encoding."""
+    """Create a compatible MP4, copying compatible streams when possible."""
 
     ffmpeg_path = shutil.which("ffmpeg")
     ffprobe_path = shutil.which("ffprobe")
@@ -127,13 +133,10 @@ def _convert_to_mp4(input_path: Path, output_path: Path) -> None:
         )
 
     def valid_output() -> bool:
-        return (
-            output_path.is_file()
-            and output_path.stat().st_size > 0
-        )
+        return output_path.is_file() and output_path.stat().st_size > 0
 
-    # Check whether the source already uses broadly compatible codecs.
-    can_copy = False
+    copy_video = False
+    copy_audio = False
 
     if ffprobe_path:
         probe_command = [
@@ -168,16 +171,19 @@ def _convert_to_mp4(input_path: Path, output_path: Path) -> None:
                     if stream.get("codec_type") == "audio"
                 ]
 
-                can_copy = (
-                    bool(video_codecs)
-                    and all(codec == "h264" for codec in video_codecs)
-                    and all(codec == "aac" for codec in audio_codecs)
+                copy_video = bool(video_codecs) and all(
+                    codec == "h264" for codec in video_codecs
                 )
-                logger.warning(
-                    "ClipFetch codec diagnostic | video=%s | audio=%s | stream_copy=%s",
+                # An absent audio stream is compatible with the optional map.
+                copy_audio = all(codec == "aac" for codec in audio_codecs)
+
+                logger.info(
+                    "ClipFetch codec diagnostic | video=%s | audio=%s "
+                    "| stream_copy_video=%s | stream_copy_audio=%s",
                     video_codecs,
                     audio_codecs,
-                    can_copy,
+                    copy_video,
+                    copy_audio,
                 )
 
         except (
@@ -190,16 +196,20 @@ def _convert_to_mp4(input_path: Path, output_path: Path) -> None:
                 "Could not inspect source codecs; using H.264/AAC conversion."
             )
 
-    # Fast path: copy compatible streams without re-encoding.
-    if can_copy:
+    # Remux already-compatible streams without decoding them.
+    if copy_video and copy_audio:
         copy_command = [
             ffmpeg_path,
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel", "error",
             "-y",
             "-i", str(input_path),
             "-map", "0:v:0",
             "-map", "0:a:0?",
             "-c", "copy",
             "-movflags", "+faststart",
+            "-fs", str(MAX_FILE_SIZE),
             "-f", "mp4",
             str(output_path),
         ]
@@ -212,72 +222,116 @@ def _convert_to_mp4(input_path: Path, output_path: Path) -> None:
                 timeout=FFMPEG_TIMEOUT,
                 check=False,
             )
+        except subprocess.TimeoutExpired as exc:
+            output_path.unlink(missing_ok=True)
+            raise DownloadServiceError(
+                "Video remuxing took too long. Please try again."
+            ) from exc
 
-            if result.returncode == 0 and valid_output():
-                logger.info("MP4 created using fast stream-copy.")
-                return
+        if result.returncode == 0 and valid_output():
+            logger.info("MP4 created using fast stream-copy.")
+            return
 
-            logger.warning(
-                "MP4 stream-copy failed; falling back to re-encoding: %s",
-                result.stderr[-1500:],
-            )
-
-        except subprocess.TimeoutExpired:
-            logger.warning(
-                "MP4 stream-copy timed out; falling back to re-encoding."
-            )
-
-        output_path.unlink(missing_ok=True)
-
-    # Compatibility fallback: encode video as H.264 and audio as AAC.
-    encode_command = [
-        ffmpeg_path,
-        "-y",
-        "-i", str(input_path),
-        "-map", "0:v:0",
-        "-map", "0:a:0?",
-        "-threads", "2",
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-crf", "23",
-        "-pix_fmt", "yuv420p",
-        "-profile:v", "main",
-        "-c:a", "aac",
-        "-b:a", "128k",
-        "-movflags", "+faststart",
-        "-max_muxing_queue_size", "1024",
-        str(output_path),
-    ]
-
-    try:
-        result = subprocess.run(
-            encode_command,
-            capture_output=True,
-            text=True,
-            timeout=FFMPEG_TIMEOUT,
-            check=False,
+        logger.warning(
+            "MP4 stream-copy failed; falling back to encoding: %s",
+            result.stderr[-1500:],
         )
+        output_path.unlink(missing_ok=True)
+        # A failed remux can indicate a container/bitstream issue; force the
+        # compatibility path rather than repeating the same copy operation.
+        copy_video = False
+        copy_audio = False
 
-        if result.returncode != 0:
-            logger.warning(
-                "FFmpeg conversion failed: %s",
-                result.stderr[-1500:],
+    def build_encode_command(
+        copy_video_stream: bool,
+        copy_audio_stream: bool,
+    ) -> list[str]:
+        command = [
+            ffmpeg_path,
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel", "error",
+            "-y",
+            "-i", str(input_path),
+            "-map", "0:v:0",
+            "-map", "0:a:0?",
+        ]
+
+        if copy_video_stream:
+            command.extend(["-c:v", "copy"])
+        else:
+            command.extend([
+                "-threads:v", "1",
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-crf", "23",
+                "-pix_fmt", "yuv420p",
+                "-profile:v", "main",
+            ])
+
+        if copy_audio_stream:
+            command.extend(["-c:a", "copy"])
+        else:
+            command.extend([
+                "-threads:a", "1",
+                "-c:a", "aac",
+                "-b:a", "128k",
+            ])
+
+        command.extend([
+            "-movflags", "+faststart",
+            "-max_muxing_queue_size", "1024",
+            "-fs", str(MAX_FILE_SIZE),
+            str(output_path),
+        ])
+        return command
+
+    def run_encoding(
+        copy_video_stream: bool,
+        copy_audio_stream: bool,
+    ):
+        try:
+            return subprocess.run(
+                build_encode_command(
+                    copy_video_stream,
+                    copy_audio_stream,
+                ),
+                capture_output=True,
+                text=True,
+                timeout=FFMPEG_TIMEOUT,
+                check=False,
             )
+        except subprocess.TimeoutExpired as exc:
+            output_path.unlink(missing_ok=True)
             raise DownloadServiceError(
-                "Video conversion failed. The source may not contain "
-                "a supported video stream."
-            )
+                "Video conversion took too long. Please try again."
+            ) from exc
 
-        if not valid_output():
-            raise DownloadServiceError(
-                "FFmpeg did not produce a valid MP4 file."
-            )
+    result = run_encoding(copy_video, copy_audio)
 
-    except subprocess.TimeoutExpired as exc:
+    # If a selective copy fails, retry once with fully compatible codecs.
+    if result.returncode != 0 and (copy_video or copy_audio):
+        logger.warning(
+            "Selective MP4 stream processing failed; retrying with full encoding."
+        )
+        output_path.unlink(missing_ok=True)
+        result = run_encoding(False, False)
+
+    if result.returncode != 0:
+        logger.warning(
+            "FFmpeg conversion failed: %s",
+            result.stderr[-1500:],
+        )
         output_path.unlink(missing_ok=True)
         raise DownloadServiceError(
-            "Video conversion took too long. Please try again."
-        ) from exc
+            "Video conversion failed. The source may not contain "
+            "a supported video stream."
+        )
+
+    if not valid_output():
+        raise DownloadServiceError(
+            "FFmpeg did not produce a valid MP4 file."
+        )
 
 def _convert_to_mp3(input_path: Path, output_path: Path) -> None:
     """Convert an audio stream to MP3."""
@@ -291,13 +345,17 @@ def _convert_to_mp3(input_path: Path, output_path: Path) -> None:
 
     command = [
         ffmpeg_path,
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel", "error",
         "-y",
         "-i", str(input_path),
-        "-threads", "2",
+        "-threads:a", "1",
         "-vn",
         "-c:a", "libmp3lame",
         "-b:a", "192k",
         "-ar", "44100",
+        "-fs", str(MAX_FILE_SIZE),
         str(output_path),
     ]
 
@@ -311,6 +369,7 @@ def _convert_to_mp3(input_path: Path, output_path: Path) -> None:
         )
 
         if result.returncode != 0:
+            output_path.unlink(missing_ok=True)
             logger.warning(
                 "FFmpeg MP3 conversion failed: %s",
                 result.stderr[-1500:],
@@ -325,6 +384,7 @@ def _convert_to_mp3(input_path: Path, output_path: Path) -> None:
             )
 
     except subprocess.TimeoutExpired as exc:
+        output_path.unlink(missing_ok=True)
         raise DownloadServiceError(
             "Audio conversion took too long. Please try again."
         ) from exc
@@ -377,8 +437,12 @@ def _download_media(
         "quiet": True,
         "no_warnings": True,
         "socket_timeout": 10,
-        "retries": 0,
-        "extractor_retries": 0,
+        **get_retry_policy(
+            retries=2,
+            fragment_retries=1,
+            extractor_retries=1,
+            file_access_retries=1,
+        ),
         "max_filesize": MAX_FILE_SIZE,
         "progress_hooks": [
             lambda progress: _check_download_size(progress, output_dir)
@@ -481,6 +545,12 @@ def _download_media(
 
             converted_path.replace(final_path)
 
+        # Keep only the final response file while it is streamed to the user.
+        try:
+            source_path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not remove temporary media source file.")
+
         logger.warning(
             "ClipFetch timing | media conversion: %.2f seconds",
             time.perf_counter() - conversion_started,
@@ -529,7 +599,11 @@ def _create_temporary_directory():
 
     from tempfile import TemporaryDirectory
 
-    return TemporaryDirectory(prefix="clipfetch_")
+    DOWNLOAD_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return TemporaryDirectory(
+        prefix="clipfetch_",
+        dir=DOWNLOAD_DIR,
+    )
 async def download_authorized_media(
     url: str,
     format_id: str,

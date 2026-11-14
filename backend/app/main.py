@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
+from app.middleware import RequestBodyLimitMiddleware
 
 
 def get_allowed_origins() -> list[str]:
@@ -47,6 +48,7 @@ async def check_media_tools():
             path or "NOT FOUND",
         )
 
+app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_allowed_origins(),
