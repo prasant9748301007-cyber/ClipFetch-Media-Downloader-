@@ -114,7 +114,7 @@ From the repository root:
 
 ```bash
 cd backend
-python -m pip install -r requirements.txt pytest
+python -m pip install -r requirements-dev.txt
 python -m pytest ../tests -v
 ```
 
