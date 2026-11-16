@@ -12,6 +12,7 @@ from app.services.network_security import (
     NetworkSecurityError,
     validate_public_host,
 )
+from app.services.retry_policy import get_retry_policy
 logger = logging.getLogger(__name__)
 
 # Metadata resource limits.
@@ -44,8 +45,12 @@ def _extract_metadata(url: str) -> dict:
         "noplaylist": True,
         "skip_download": True,
         "socket_timeout": SOCKET_TIMEOUT,
-        "retries": 0,
-        "extractor_retries": 0,
+        **get_retry_policy(
+            retries=1,
+            fragment_retries=0,
+            extractor_retries=1,
+            file_access_retries=0,
+        ),
         "ignoreerrors": False,
     }
 

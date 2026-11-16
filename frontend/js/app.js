@@ -370,6 +370,15 @@ function displayMetadata(media) {
 }
 
 
+// Clear stale metadata if the user edits the source URL after fetching it.
+urlInput.addEventListener("input", () => {
+    if (currentMediaURL && urlInput.value.trim() !== currentMediaURL) {
+        clearMediaResult();
+        hideStatus();
+    }
+});
+
+
 // ========================================
 // FETCH MEDIA METADATA
 // ========================================
@@ -475,6 +484,11 @@ downloadButton.addEventListener("click", async () => {
 
     setDownloading(true);
     showDownloadStatus("Preparing your download. Please wait...");
+    const waitMessageTimer = window.setTimeout(() => {
+        showDownloadStatus(
+            "The server is still preparing the file. The browser download starts when preparation is complete."
+        );
+    }, 10000);
 
     try {
         const response = await fetch(
@@ -569,6 +583,7 @@ if (!/\.[a-z0-9]{2,5}$/i.test(filename)) {
         );
 
     } finally {
+        window.clearTimeout(waitMessageTimer);
         setDownloading(false);
     }
 });
