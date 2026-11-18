@@ -37,6 +37,10 @@ class FakeYoutubeDL:
             ],
         }
 
+    def build_format_selector(self, format_selector):
+        self.built_format_selector = format_selector
+        return format_selector
+
     def process_ie_result(self, info, download=True):
         self.process_count += 1
         assert download is True
@@ -127,6 +131,8 @@ def test_video_download_creates_mp4(monkeypatch, tmp_path):
     fake_ydl = FakeYoutubeDL.instances[-1]
     assert fake_ydl.extract_count == 1
     assert fake_ydl.process_count == 1
+    assert fake_ydl.format_selector == fake_ydl.built_format_selector
+    assert fake_ydl.format_selector == fake_ydl.params["format"]
 
 
 def test_download_rejects_oversized_source(monkeypatch, tmp_path):

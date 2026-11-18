@@ -500,9 +500,13 @@ def _download_media(
 
                 # Reuse the extracted result instead of asking yt-dlp to
                 # extract the same URL again during the download.
-                ydl.params["format"] = _get_format_selector(
+                format_selector = _get_format_selector(
                     info,
                     format_id,
+                )
+                ydl.params["format"] = format_selector
+                ydl.format_selector = ydl.build_format_selector(
+                    format_selector
                 )
 
                 download_started = time.perf_counter()
