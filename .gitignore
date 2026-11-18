@@ -71,3 +71,10 @@ Thumbs.db
 # ClipFetch temporary testing files
 clipfetch_test.*
 *_headers.txt
+
+# ClipFetch benchmark and diagnostic artifacts
+clipfetch-benchmark*
+clipfetch-diagnostic*
+clipfetch-best-test*
+clipfetch-headers.txt
+clipfetch-headers-*.txt
