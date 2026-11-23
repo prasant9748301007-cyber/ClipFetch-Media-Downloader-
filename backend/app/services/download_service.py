@@ -238,6 +238,10 @@ def _convert_to_mp4(input_path: Path, output_path: Path) -> None:
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
+            logger.warning(
+                "FFmpeg remux timeout after %s seconds.",
+                FFMPEG_TIMEOUT,
+            )
             output_path.unlink(missing_ok=True)
             raise DownloadServiceError(
                 "Video remuxing took too long. Please try again."
@@ -317,6 +321,21 @@ def _convert_to_mp4(input_path: Path, output_path: Path) -> None:
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
+            stderr = exc.stderr or ""
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", errors="replace")
+
+            logger.warning(
+                "FFmpeg encoding timeout | timeout=%s seconds | "
+                "copy_video=%s | copy_audio=%s | source_size=%s bytes | "
+                "stderr=%s",
+                FFMPEG_TIMEOUT,
+                copy_video_stream,
+                copy_audio_stream,
+                input_path.stat().st_size if input_path.exists() else 0,
+                stderr[-1500:],
+            )
+
             output_path.unlink(missing_ok=True)
             raise DownloadServiceError(
                 "Video conversion took too long. Please try again."

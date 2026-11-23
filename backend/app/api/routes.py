@@ -110,6 +110,7 @@ async def download_media_endpoint(request: DownloadRequest):
         )
 
     except DownloadServiceError as exc:
+        logger.warning("Download request failed: %s", str(exc))
         raise HTTPException(
             status_code=400,
             detail=str(exc),
