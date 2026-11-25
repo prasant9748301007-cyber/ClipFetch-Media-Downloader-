@@ -417,6 +417,9 @@ def test_best_quality_prefers_h264_aac(monkeypatch):
 
     selector = service._get_format_selector(info, "best")
 
+    download_selector = service._get_format_selector(info, "download")
+    assert download_selector == selector
+
     assert "bestvideo[vcodec~=" in selector
     assert "bestaudio[acodec~=" in selector
     assert "bestvideo+bestaudio/best" in selector

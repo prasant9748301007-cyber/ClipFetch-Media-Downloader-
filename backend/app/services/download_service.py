@@ -106,7 +106,7 @@ def _get_format_selector(
             "Live streams are not supported."
         )
 
-    if format_id == "best":
+    if format_id in {"best", "download"}:
         return (
             "bestvideo[vcodec~='^(avc1|h264)']"
             "+bestaudio[acodec~='^(mp4a|aac)']/"
