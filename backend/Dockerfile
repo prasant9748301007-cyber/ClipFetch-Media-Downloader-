@@ -17,10 +17,14 @@ RUN python -m pip install --no-cache-dir -r requirements.txt
 
 COPY --chown=clipfetch:clipfetch app ./app
 
-ENV CLIPFETCH_TEMP_DIR=/tmp/clipfetch-downloads
+ENV CLIPFETCH_TEMP_DIR=/tmp/clipfetch-downloads \
+    CLIPFETCH_PROXY_BIND=127.0.0.1 \
+    CLIPFETCH_PROXY_PORT=3128 \
+    CLIPFETCH_EGRESS_PROXY=http://127.0.0.1:3128 \
+    CLIPFETCH_REQUIRE_EGRESS_PROXY=true
 
 USER clipfetch
 
 EXPOSE 10000
 
-CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-10000} --workers 1"]
+CMD ["python", "-m", "app.supervisor"]

@@ -1,14 +1,17 @@
 """Small CONNECT-only HTTPS proxy with DNS-rebinding-safe destination checks.
 
-Run as a separate process/service. The proxy resolves each requested hostname,
-rejects the whole answer set if any address is unsafe, and connects to one of
-those exact validated IPs (never resolving the hostname again at connect time).
+Run as a loopback process (supervised alongside FastAPI in the same container
+or standalone during local development). The proxy resolves each requested
+hostname, rejects the whole answer set if any address is unsafe, and connects
+to one of those exact validated IPs (never resolving the hostname again at
+connect time).
 """
 
 import ipaddress
 import logging
 import os
 import selectors
+import signal
 import socket
 import socketserver
 import threading
@@ -233,13 +236,69 @@ class _ThreadedProxy(socketserver.ThreadingTCPServer):
 def serve(
     host: str | None = None,
     port: int | None = None,
+    stop_event: threading.Event | None = None,
 ) -> None:
-    """Serve the filtering proxy. Intended for a private Render service."""
-    host = host or os.getenv("CLIPFETCH_PROXY_BIND", "0.0.0.0")
-    port = port or int(os.getenv("CLIPFETCH_PROXY_PORT", "3128"))
-    with _ThreadedProxy((host, port), _ProxyHandler) as server:
-        logger.info("Filtering CONNECT proxy listening on %s:%d", host, port)
-        server.serve_forever()
+    """Serve the filtering proxy, defaulting to loopback 127.0.0.1:3128."""
+    resolved_host = (
+        host if host is not None else (os.getenv("CLIPFETCH_PROXY_BIND") or "127.0.0.1")
+    )
+    resolved_port = (
+        port if port is not None else int(os.getenv("CLIPFETCH_PROXY_PORT") or "3128")
+    )
+
+    shutdown_requested = False
+    previous_handlers: dict[int, object] = {}
+    is_main_thread = threading.current_thread() is threading.main_thread()
+
+    if is_main_thread:
+        def _handle_shutdown_signal(signum, _frame) -> None:
+            nonlocal shutdown_requested
+            shutdown_requested = True
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            previous_handlers[sig] = signal.getsignal(sig)
+            signal.signal(sig, _handle_shutdown_signal)
+
+    try:
+        with _ThreadedProxy((resolved_host, resolved_port), _ProxyHandler) as server:
+            logger.info(
+                "Filtering CONNECT proxy listening on %s:%d",
+                resolved_host,
+                server.server_address[1],
+            )
+            server_error: BaseException | None = None
+
+            def _run_server() -> None:
+                nonlocal server_error
+                try:
+                    server.serve_forever()
+                except BaseException as exc:  # pragma: no cover - defensive
+                    server_error = exc
+
+            server_thread = threading.Thread(target=_run_server, daemon=True)
+            server_thread.start()
+
+            try:
+                while server_thread.is_alive():
+                    if shutdown_requested or (
+                        stop_event is not None and stop_event.is_set()
+                    ):
+                        logger.info("Shutting down filtering CONNECT proxy.")
+                        server.shutdown()
+                        break
+                    if stop_event is not None:
+                        stop_event.wait(timeout=0.1)
+                    else:
+                        time.sleep(0.1)
+            finally:
+                server.shutdown()
+                server_thread.join(timeout=5.0)
+
+            if server_error is not None:
+                raise server_error
+    finally:
+        for sig, handler in previous_handlers.items():
+            signal.signal(sig, handler)
 
 
 if __name__ == "__main__":

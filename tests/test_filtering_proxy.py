@@ -1,5 +1,10 @@
+import os
 import socket
+import subprocess
+import sys
 import threading
+import time
+from pathlib import Path
 
 import pytest
 
@@ -215,3 +220,66 @@ def test_proxy_rejects_oversized_connect_headers():
     finally:
         server.shutdown()
         server.server_close()
+
+
+def _reserve_loopback_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def test_serve_defaults_to_loopback_bind(monkeypatch):
+    monkeypatch.delenv("CLIPFETCH_PROXY_BIND", raising=False)
+    monkeypatch.setenv("CLIPFETCH_PROXY_PORT", "0")
+
+    bound_addresses = []
+    original_proxy = filtering_proxy._ThreadedProxy
+
+    class RecordingProxy(original_proxy):
+        def __init__(self, server_address, handler_cls):
+            bound_addresses.append(server_address)
+            super().__init__(server_address, handler_cls)
+
+    monkeypatch.setattr(filtering_proxy, "_ThreadedProxy", RecordingProxy)
+    stop_event = threading.Event()
+    stop_event.set()
+    filtering_proxy.serve(stop_event=stop_event)
+
+    assert bound_addresses == [("127.0.0.1", 0)]
+
+
+def test_filtering_proxy_process_shuts_down_gracefully_on_sigterm():
+    port = _reserve_loopback_port()
+    backend_dir = str(Path(__file__).resolve().parents[1] / "backend")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = backend_dir
+    env["CLIPFETCH_PROXY_BIND"] = "127.0.0.1"
+    env["CLIPFETCH_PROXY_PORT"] = str(port)
+
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "app.services.filtering_proxy"],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 5.0
+        ready = False
+        while time.monotonic() < deadline:
+            assert proc.poll() is None
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.2) as sock:
+                    sock.sendall(b"OPTIONS * HTTP/1.1\r\n\r\n")
+                    if sock.recv(64).startswith(b"HTTP/1.1 403 "):
+                        ready = True
+                        break
+            except OSError:
+                time.sleep(0.05)
+        assert ready
+
+        proc.terminate()
+        assert proc.wait(timeout=5.0) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5.0)

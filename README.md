@@ -32,13 +32,14 @@ Live streams, playlists, private/authenticated media, and other platforms are no
 
 - `frontend/`: static browser interface (`index.html`, `terms.html`, `privacy.html`, `css/style.css`, `js/config.js`, `js/app.js`).
 - `backend/app/main.py`: FastAPI application, CORS configuration, lifespan FFmpeg check, health endpoints.
+- `backend/app/supervisor.py`: single-container process supervisor that starts `filtering_proxy` on loopback first, verifies readiness, starts Uvicorn, and coordinates graceful shutdown and crash handling.
 - `backend/app/middleware.py`: `RequestBodyLimitMiddleware` (8 KiB cap) and `SecurityHeadersMiddleware`.
 - `backend/app/api/routes.py`: `/api/validate-url`, `/api/metadata`, and `/api/download` endpoints with automatic temp-directory cleanup after response streaming.
 - `backend/app/services/`:
   - `platform_detector.py`: strict HTTPS URL validation and platform hostname allowlist.
   - `network_security.py`: DNS precheck and IANA special-purpose/non-public IPv4/IPv6 rejection.
   - `egress_proxy.py`: fail-closed outbound proxy URL configuration.
-  - `filtering_proxy.py`: standalone CONNECT-only HTTPS proxy with DNS-rebinding-safe IP pinning.
+  - `filtering_proxy.py`: CONNECT-only HTTPS proxy with DNS-rebinding-safe IP pinning (loopback `127.0.0.1:3128`).
   - `media_service.py`: bounded-concurrency metadata extraction.
   - `download_service.py`: bounded-concurrency download, size enforcement, FFmpeg remux/transcoding, and temp cleanup.
   - `retry_policy.py`: finite retry policy with bounded exponential backoff.
@@ -116,10 +117,10 @@ The values in `backend/.env.example` are documentation examples only. The backen
 |---|---|
 | `CLIPFETCH_FRONTEND_ORIGINS` | Comma-separated exact origins allowed by CORS (e.g. `https://your-frontend.onrender.com`). No trailing slash or path. |
 | `CLIPFETCH_TEMP_DIR` | Absolute parent directory for private per-request temporary download directories. Defaults to `<system-temp>/clipfetch-downloads`. |
-| `CLIPFETCH_EGRESS_PROXY` | Required filtering proxy URL (`http://127.0.0.1:3128` locally, or `http://<private-service-hostname>:3128` on Render). |
-| `CLIPFETCH_REQUIRE_EGRESS_PROXY` | Defaults to `true` (fail closed unless a valid proxy is configured). Set `false` only for isolated local development without the proxy. |
-| `CLIPFETCH_PROXY_BIND` | Optional bind address for `filtering_proxy` (default `0.0.0.0`). |
-| `CLIPFETCH_PROXY_PORT` | Optional listening port for `filtering_proxy` (default `3128`). |
+| `CLIPFETCH_EGRESS_PROXY` | Required filtering proxy URL (`http://127.0.0.1:3128` in single-container production and local proxy dev). |
+| `CLIPFETCH_REQUIRE_EGRESS_PROXY` | Defaults to `true` (fail closed unless a valid proxy is configured). Set `false` only for isolated local development without the supervisor/proxy. |
+| `CLIPFETCH_PROXY_BIND` | Bind address for `filtering_proxy` (default `127.0.0.1`; single-container mode requires `127.0.0.1`). |
+| `CLIPFETCH_PROXY_PORT` | Listening port for `filtering_proxy` (default `3128`). |
 
 ## Usage instructions
 
@@ -174,37 +175,35 @@ Mocked tests do not verify live TikTok, Instagram, or Facebook availability; pla
 
 ## Deployment guide (Docker & Render)
 
-Build and run the backend container locally:
+Build and run the single-container backend locally (runs `filtering_proxy` on `127.0.0.1:3128` and FastAPI on `$PORT`, default `10000`):
 
 ```bash
 docker build -t clipfetch-backend ./backend
 docker run --rm -p 10000:10000 \
   -e CLIPFETCH_FRONTEND_ORIGINS="https://your-frontend.example" \
-  -e CLIPFETCH_REQUIRE_EGRESS_PROXY="false" \
   clipfetch-backend
 ```
 
-The container installs `ffmpeg`/`ffprobe`, runs as non-root user `clipfetch`, uses one Uvicorn worker (`--workers 1`) so in-process concurrency limits remain exact, and honors `$PORT` (default `10000`).
+The container installs `ffmpeg`/`ffprobe`, runs as non-root user `clipfetch`, uses `python -m app.supervisor` to verify `filtering_proxy` readiness on `127.0.0.1:3128` before launching one Uvicorn worker (`--workers 1`) so in-process concurrency limits remain exact, and honors `$PORT` (default `10000`). Only port `10000` (or `$PORT`) is exposed; proxy port `3128` is bound strictly to `127.0.0.1` and never exposed.
 
-### Render deployment
+### Render deployment (Single Web Service)
 
-1. **Filtering proxy (Render Private Service)**:
-   - Runtime: **Docker** using `backend/Dockerfile`.
-   - Docker Command: `python -m app.services.filtering_proxy`
-   - Environment variables: `CLIPFETCH_PROXY_BIND=0.0.0.0`, `CLIPFETCH_PROXY_PORT=3128`.
-   - Deploy in the same Render workspace and region as the backend API.
-2. **Backend API (Render Web Service)**:
-   - Runtime: **Docker** using `backend/Dockerfile`.
+1. **Backend API + Filtering Proxy (Render Web Service)**:
+   - Runtime: **Docker** using `backend/Dockerfile` (no separate Render Private Service needed).
+   - Docker Command: leave empty (uses `CMD ["python", "-m", "app.supervisor"]` from `backend/Dockerfile`).
    - Health Check Path: `/api/health`.
    - Environment variables:
      - `CLIPFETCH_FRONTEND_ORIGINS=https://<your-frontend-service>.onrender.com`
-     - `CLIPFETCH_EGRESS_PROXY=http://<private-proxy-hostname>:3128` (single-label internal hostname from Render's Private Service **Internal** connection details)
+     - `CLIPFETCH_EGRESS_PROXY=http://127.0.0.1:3128`
      - `CLIPFETCH_REQUIRE_EGRESS_PROXY=true`
-3. **Frontend (Render Static Site)**:
+     - `CLIPFETCH_PROXY_BIND=127.0.0.1`
+     - `CLIPFETCH_PROXY_PORT=3128`
+     - `CLIPFETCH_TEMP_DIR=/tmp/clipfetch-downloads`
+2. **Frontend (Render Static Site)**:
    - Publish directory: `frontend`.
    - Ensure `frontend/js/config.js` `API_BASE_URL` matches your deployed backend HTTPS URL.
 
-Important: Render private networking makes the proxy reachable to same-workspace services, but it does **not** enforce OS/network-level egress isolation blocking the API container from direct internet sockets. Application-level proxy enforcement routes `yt-dlp` traffic through the proxy and fails closed if the proxy is missing or unreachable; strict container-wide egress isolation requires a network-level outbound firewall/egress policy in your hosting environment.
+Important: Binding `filtering_proxy` to `127.0.0.1:3128` inside the Web Service container ensures port `3128` is unreachable from outside the container, and application-level proxy enforcement fails closed if the proxy stops or is unreachable. However, running both processes in one container does **not** enforce OS/kernel-level outbound firewalling against direct sockets from unrelated binaries; strict container-wide egress isolation requires a network-level outbound firewall/egress policy in your hosting environment.
 
 The repository does not manage Render service plans, Cloudflare DNS/WAF, or edge per-IP rate limiting. Configure edge rate limiting at Cloudflare or your reverse proxy before exposing the API publicly.
 
