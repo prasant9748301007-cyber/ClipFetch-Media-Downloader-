@@ -1,112 +1,153 @@
 # ClipFetch
 
-ClipFetch is a small FastAPI service and static web interface for downloading media that the user owns or is authorized to save. The backend uses yt-dlp for extraction and FFmpeg for MP4/MP3 output.
+ClipFetch is a FastAPI service and static web interface for downloading public media that the user owns or is authorized to save. The backend uses `yt-dlp` (with `curl-cffi` impersonation where required) for extraction and FFmpeg for MP4/MP3 output, routed through a CONNECT-only filtering egress proxy.
 
-## Current features
+## Features
 
-- URL support for TikTok, Instagram, and Facebook hostnames listed in `backend/app/services/platform_detector.py`.
-- Metadata lookup and video downloads in MP4.
-- Audio-only downloads converted to MP3 at 192 kbps and 44.1 kHz.
-- A responsive HTML/CSS/JavaScript interface with dark and light themes.
-- HTTPS, platform-host allowlisting, public-address DNS checks, request-size limits, bounded processing concurrency, and private per-request temporary directories.
+- URL validation and platform detection for supported TikTok, Instagram, and Facebook hostnames.
+- Metadata lookup (title, thumbnail, duration, creator, and available video formats).
+- Video download in MP4 (`clipfetch_media.mp4`) with stream-copy remuxing when H.264/AAC compatible and `+faststart` moov placement, falling back to H.264/AAC encoding only when needed.
+- Audio-only extraction converted to MP3 (`clipfetch_audio.mp3`) at 192 kbps and 44.1 kHz.
+- Responsive static HTML/CSS/JavaScript frontend with light/dark theme toggle, Terms of Service, and Privacy Policy pages.
+- Fail-closed egress proxy enforcement, HTTPS-only URLs, platform-host allowlisting, IANA special-purpose and non-public IP rejection, 8 KiB request-body limit, 100 MiB media size limit, bounded concurrency, security headers, and private per-request temporary directories.
 
-ClipFetch does not bypass authentication, access controls, DRM, or platform restrictions. Use it only for media you are authorized to download and follow the source platform's terms.
+## Supported platforms
 
-## Architecture and current scope
+Supported hostnames are explicitly allowlisted in [platform_detector.py](backend/app/services/platform_detector.py):
 
-- `frontend/`: static browser interface.
-- `backend/app/api/`: FastAPI endpoints.
-- `backend/app/services/`: URL checks, metadata extraction, yt-dlp downloads, and FFmpeg conversion.
-- `tests/`: backend unit/API tests and small local FFmpeg integration tests.
-- The database and schema packages are empty placeholders. The current application does not use SQLite, store download history, or persist user data.
-- The repository does not include a Render or Cloudflare configuration. A Dockerfile is provided for a reproducible backend image.
+- **TikTok**: `tiktok.com`, `www.tiktok.com`, `m.tiktok.com`, `vm.tiktok.com`, `vt.tiktok.com`
+- **Instagram**: `instagram.com`, `www.instagram.com`
+- **Facebook**: `facebook.com`, `www.facebook.com`, `m.facebook.com`, `web.facebook.com`, `fb.watch`
+
+Live streams, playlists, private/authenticated media, and other platforms are not supported.
+
+## Tech stack
+
+- **Backend**: Python 3.12, FastAPI, Uvicorn, Pydantic, yt-dlp, curl-cffi
+- **Media processing**: FFmpeg and `ffprobe`
+- **Frontend**: Vanilla HTML, CSS, and JavaScript
+- **Testing & CI**: Pytest, Node.js syntax check (`node --check`), GitHub Actions, Docker
+
+## Architecture overview
+
+- `frontend/`: static browser interface (`index.html`, `terms.html`, `privacy.html`, `css/style.css`, `js/config.js`, `js/app.js`).
+- `backend/app/main.py`: FastAPI application, CORS configuration, lifespan FFmpeg check, health endpoints.
+- `backend/app/middleware.py`: `RequestBodyLimitMiddleware` (8 KiB cap) and `SecurityHeadersMiddleware`.
+- `backend/app/api/routes.py`: `/api/validate-url`, `/api/metadata`, and `/api/download` endpoints with automatic temp-directory cleanup after response streaming.
+- `backend/app/services/`:
+  - `platform_detector.py`: strict HTTPS URL validation and platform hostname allowlist.
+  - `network_security.py`: DNS precheck and IANA special-purpose/non-public IPv4/IPv6 rejection.
+  - `egress_proxy.py`: fail-closed outbound proxy URL configuration.
+  - `filtering_proxy.py`: standalone CONNECT-only HTTPS proxy with DNS-rebinding-safe IP pinning.
+  - `media_service.py`: bounded-concurrency metadata extraction.
+  - `download_service.py`: bounded-concurrency download, size enforcement, FFmpeg remux/transcoding, and temp cleanup.
+  - `retry_policy.py`: finite retry policy with bounded exponential backoff.
+- `backend/app/database/` and `backend/app/schemas/`: empty placeholders. The application does not use a database, store download history, or persist user data.
+- `tests/`: backend unit, security, API, concurrency, and local FFmpeg integration tests.
 
 ## Requirements
 
-- Python 3.12.
-- FFmpeg and ffprobe on the backend host.
-- Node.js 20 only to run the frontend JavaScript syntax check.
-- A browser for the static frontend.
+- Python 3.12
+- FFmpeg and `ffprobe` on the backend host
+- Node.js 20 (optional, for running `node --check` on frontend JavaScript)
+- A modern browser for the static frontend
 
-The backend uses the pinned packages in `backend/requirements.txt`. yt-dlp's supported platforms and extraction behavior can change as source sites change.
+## Local installation and setup
 
-## Local setup
-
-Install FFmpeg on Ubuntu or WSL2:
+### 1. Install FFmpeg (Ubuntu / WSL2)
 
 ```bash
 sudo apt update
-sudo apt install ffmpeg
+sudo apt install -y ffmpeg
 ffmpeg -version
 ffprobe -version
 ```
 
-Set up and start the backend:
+### 2. Create virtual environment and install backend dependencies
 
 ```bash
 cd backend
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
+```
+
+### 3. Run the backend
+
+For local development with the filtering proxy (recommended to match production behavior):
+
+```bash
+# Terminal 1 (from backend/ with venv activated)
+python -m app.services.filtering_proxy
+```
+
+```bash
+# Terminal 2 (from backend/ with venv activated)
 export CLIPFETCH_FRONTEND_ORIGINS="http://127.0.0.1:5500,http://localhost:5500"
+export CLIPFETCH_EGRESS_PROXY="http://127.0.0.1:3128"
+export CLIPFETCH_REQUIRE_EGRESS_PROXY="true"
 uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-In another terminal, start the static frontend:
+For isolated local development without running the filtering proxy:
+
+```bash
+export CLIPFETCH_FRONTEND_ORIGINS="http://127.0.0.1:5500,http://localhost:5500"
+export CLIPFETCH_REQUIRE_EGRESS_PROXY="false"
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+### 4. Run the frontend
+
+In a separate terminal:
 
 ```bash
 cd frontend
 python3 -m http.server 5500
 ```
 
-Open `http://127.0.0.1:5500`. The local API URL is `http://127.0.0.1:8000`; the checked-in `frontend/js/config.js` currently points to the Render API, so change it to the local API URL when developing locally.
+Open `http://127.0.0.1:5500`. Note that the checked-in `frontend/js/config.js` points to the deployed Render backend URL (`https://clipfetch-media-downloader.onrender.com`); point `API_BASE_URL` to `http://127.0.0.1:8000` temporarily when testing against a local backend.
 
-The environment variables in `backend/.env.example` are examples only. The application reads process environment variables and does not load a `.env` file automatically.
+The values in `backend/.env.example` are documentation examples only. The backend reads process environment variables directly and does not load a `.env` file automatically.
 
 ## Environment variables
 
 | Variable | Purpose |
 |---|---|
-| `CLIPFETCH_FRONTEND_ORIGINS` | Comma-separated exact origins allowed by CORS. Set the deployed frontend origin without a path. |
-| `CLIPFETCH_TEMP_DIR` | Parent directory for private temporary download directories. Defaults to the system temporary directory plus `clipfetch-downloads`. |
-| `CLIPFETCH_EGRESS_PROXY` | Optional loopback HTTP proxy URL, such as `http://127.0.0.1:3128`. |
-| `CLIPFETCH_REQUIRE_EGRESS_PROXY` | When `true`, requests fail closed unless a valid loopback proxy is configured. |
+| `CLIPFETCH_FRONTEND_ORIGINS` | Comma-separated exact origins allowed by CORS (e.g. `https://your-frontend.onrender.com`). No trailing slash or path. |
+| `CLIPFETCH_TEMP_DIR` | Absolute parent directory for private per-request temporary download directories. Defaults to `<system-temp>/clipfetch-downloads`. |
+| `CLIPFETCH_EGRESS_PROXY` | Required filtering proxy URL (`http://127.0.0.1:3128` locally, or `http://<private-service-hostname>:3128` on Render). |
+| `CLIPFETCH_REQUIRE_EGRESS_PROXY` | Defaults to `true` (fail closed unless a valid proxy is configured). Set `false` only for isolated local development without the proxy. |
+| `CLIPFETCH_PROXY_BIND` | Optional bind address for `filtering_proxy` (default `0.0.0.0`). |
+| `CLIPFETCH_PROXY_PORT` | Optional listening port for `filtering_proxy` (default `3128`). |
 
-The proxy settings do not start a proxy. A local proxy service must be deployed separately if strict egress filtering is required.
+## Usage instructions
 
-## API
+1. Open the ClipFetch web interface.
+2. Paste a public `https://` media URL from TikTok, Instagram, or Facebook.
+3. Click **Fetch Media** to retrieve metadata and available qualities.
+4. Select **Best Quality**, a specific video resolution (MP4), or **Audio Only · MP3**.
+5. Click **Download Media** and wait for server preparation and file download to complete.
 
-All POST endpoints accept JSON.
+## API endpoints
+
+All `POST` endpoints accept JSON bodies up to 8 KiB. Interactive documentation is available at `/docs` while running.
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| GET | `/` | Basic service information. |
-| GET | `/api/health` | Liveness check. |
-| POST | `/api/validate-url` | Check HTTPS URL syntax and supported platform. |
-| POST | `/api/metadata` | Extract title, duration, thumbnail, uploader, and available formats. |
-| POST | `/api/download` | Download the selected format and return a streamed MP4 or MP3 file. |
+| `GET` | `/` | Basic service metadata. |
+| `GET` | `/api/health` | Liveness check (`status`, `application`, `version`). |
+| `POST` | `/api/validate-url` | Check HTTPS URL syntax and supported platform hostname. |
+| `POST` | `/api/metadata` | Extract title, duration, thumbnail, creator, and available formats. |
+| `POST` | `/api/download` | Download the selected format and stream `clipfetch_media.mp4` (`video/mp4`) or `clipfetch_audio.mp3` (`audio/mpeg`). |
 
 Example request:
 
 ```json
-{"url":"https://www.tiktok.com/@creator/video/123456"}
+{"url": "https://www.tiktok.com/@creator/video/123456"}
 ```
 
-Download requests may include `format_id`; use `audio_mp3` for MP3 output. Video format IDs are revalidated against fresh extraction data before download.
-
-The API returns HTTP 413 for request bodies above 8 KiB and HTTP 400 for invalid or unavailable media. The interactive API schema is at `/docs` while the service is running.
-
-## Resource limits and file handling
-
-- One Uvicorn worker is used by the provided Docker image so in-process concurrency limits remain meaningful.
-- At most two media workers and three metadata workers run per process. Requests wait up to five seconds for a slot.
-- Metadata extraction has a 60-second timeout; download processing has a 180-second timeout.
-- Source and final files are limited to 100 MiB. FFmpeg is also given an output size cap.
-- Each request uses a private temporary directory. The original source file is removed after conversion; the final response file is removed after the streamed response completes.
-- Compatible H.264/AAC streams are remuxed without re-encoding. If only one stream is compatible, the other stream is encoded. Remaining formats are converted to H.264/AAC with one encoder thread.
-- yt-dlp uses a small, finite retry count with short exponential delays. Fragment concurrency remains at yt-dlp's default of one.
-
-The concurrency controls are process-local. Adding workers or scaling to multiple instances increases aggregate concurrency and temporary disk use; measure resource usage before changing either.
+For `/api/download`, pass `format_id` as `"best"`, `"audio_mp3"`, or one of the `format_id` values returned by `/api/metadata`. The API returns `400` for invalid or unavailable media, `413` for bodies over 8 KiB, and `422` for malformed request payloads.
 
 ## Testing
 
@@ -115,34 +156,81 @@ From the repository root:
 ```bash
 cd backend
 python -m pip install -r requirements-dev.txt
-python -m pytest ../tests -v
+cd ..
+PYTHONPATH=backend python -m pytest tests -v
 ```
 
-The test suite includes mocked extractor/API unit tests, URL and network-security checks, resource-limit tests, and local FFmpeg integration tests using generated media. The GitHub Actions workflow runs backend tests, JavaScript syntax checks, and a Docker image build.
+Syntax and compile checks:
 
-Mocked tests do not prove that TikTok, Instagram, or Facebook will serve a particular URL. Platform behavior must be checked separately with user-authorized public test media, and failures may be caused by platform policy, availability, regional restrictions, or upstream changes.
+```bash
+python -m compileall -q backend/app
+node --check frontend/js/app.js
+node --check frontend/js/config.js
+```
 
-## Deployment
+The test suite covers URL validation, network security and IANA special-purpose IP checks, egress proxy configuration, filtering proxy CONNECT/relay behavior, metadata and download services (mocked yt-dlp), concurrency/queue/timeout limits, API endpoints and headers, and local FFmpeg integration with generated media.
 
-Build and run the backend image from the repository root:
+Mocked tests do not verify live TikTok, Instagram, or Facebook availability; platform extraction depends on upstream site structure and public accessibility.
+
+## Deployment guide (Docker & Render)
+
+Build and run the backend container locally:
 
 ```bash
 docker build -t clipfetch-backend ./backend
 docker run --rm -p 10000:10000 \
   -e CLIPFETCH_FRONTEND_ORIGINS="https://your-frontend.example" \
+  -e CLIPFETCH_REQUIRE_EGRESS_PROXY="false" \
   clipfetch-backend
 ```
 
-The container installs FFmpeg/ffprobe, runs as a non-root user, uses one Uvicorn worker, and honors the platform's `PORT` environment variable. Configure the service health check to use `/api/health`. On Render, select the Docker runtime and the backend Dockerfile. Host the frontend separately and set `CLIPFETCH_FRONTEND_ORIGINS` to its exact HTTPS origin.
+The container installs `ffmpeg`/`ffprobe`, runs as non-root user `clipfetch`, uses one Uvicorn worker (`--workers 1`) so in-process concurrency limits remain exact, and honors `$PORT` (default `10000`).
 
-The repository does not set a Render plan, Cloudflare DNS, proxy, firewall, or edge rate limit. Those deployment settings must be reviewed in the service account. The API has concurrency and request-size limits but no per-IP rate limiter; apply an edge rate limit before exposing it publicly. Do not enable `CLIPFETCH_REQUIRE_EGRESS_PROXY=true` unless a filtering loopback proxy is actually running in the container.
+### Render deployment
 
-## Security and known limitations
+1. **Filtering proxy (Render Private Service)**:
+   - Runtime: **Docker** using `backend/Dockerfile`.
+   - Docker Command: `python -m app.services.filtering_proxy`
+   - Environment variables: `CLIPFETCH_PROXY_BIND=0.0.0.0`, `CLIPFETCH_PROXY_PORT=3128`.
+   - Deploy in the same Render workspace and region as the backend API.
+2. **Backend API (Render Web Service)**:
+   - Runtime: **Docker** using `backend/Dockerfile`.
+   - Health Check Path: `/api/health`.
+   - Environment variables:
+     - `CLIPFETCH_FRONTEND_ORIGINS=https://<your-frontend-service>.onrender.com`
+     - `CLIPFETCH_EGRESS_PROXY=http://<private-proxy-hostname>:3128` (single-label internal hostname from Render's Private Service **Internal** connection details)
+     - `CLIPFETCH_REQUIRE_EGRESS_PROXY=true`
+3. **Frontend (Render Static Site)**:
+   - Publish directory: `frontend`.
+   - Ensure `frontend/js/config.js` `API_BASE_URL` matches your deployed backend HTTPS URL.
 
-- Only HTTPS URLs on the explicit platform hostname allowlist are accepted.
-- DNS results for the submitted hostname are rejected if any address is non-public.
-- yt-dlp and FFmpeg receive argument lists; user URLs and format IDs are not interpolated into shell commands.
-- CORS allows configured origins only; credentials are disabled.
-- No credentials, cookies, or account authentication are accepted by the application.
-- DNS is checked before yt-dlp connects, but the application does not pin resolved addresses or inspect every redirect/CDN connection itself. Strict production SSRF protection therefore requires an outbound filtering proxy or network policy.
-- No live Render resource metrics or authenticated deployment logs are part of this repository checkout, so memory use and production platform behavior must be checked in the service dashboard.
+Important: Render private networking makes the proxy reachable to same-workspace services, but it does **not** enforce OS/network-level egress isolation blocking the API container from direct internet sockets. Application-level proxy enforcement routes `yt-dlp` traffic through the proxy and fails closed if the proxy is missing or unreachable; strict container-wide egress isolation requires a network-level outbound firewall/egress policy in your hosting environment.
+
+The repository does not manage Render service plans, Cloudflare DNS/WAF, or edge per-IP rate limiting. Configure edge rate limiting at Cloudflare or your reverse proxy before exposing the API publicly.
+
+## Security architecture
+
+- **Strict URL & platform allowlisting**: Only `https://` URLs on port `443` without credentials, whitespace, backslashes, or control characters on explicitly allowlisted TikTok/Instagram/Facebook hostnames are accepted.
+- **DNS precheck & IANA special-purpose IP blocking**: Submitted hostnames are resolved and rejected if any IP is non-global, private, loopback, link-local, multicast, reserved, unspecified, IPv4-mapped IPv6, or in IANA special-purpose ranges (`100.64.0.0/10`, `192.0.0.0/24`, `198.18.0.0/15`, `2001:db8::/32`, `2002::/16`, etc.).
+- **Fail-closed filtering proxy**: `CLIPFETCH_REQUIRE_EGRESS_PROXY` defaults to `true`. `filtering_proxy.py` accepts `CONNECT` on port `443` only, re-resolves and validates every initial, redirect, and CDN hostname, and opens the upstream socket directly to the validated IP (preventing DNS rebinding). Proxy failures do not fall back to direct outbound requests.
+- **Subprocess & filesystem isolation**: `yt-dlp` and `FFmpeg` receive argument lists (no shell interpolation); HLS uses `hls_prefer_native` so `yt-dlp` handles segments through the configured proxy rather than spawning `FFmpegFD` against remote URLs. Each download uses a private `0700` temporary directory cleaned up after streaming.
+- **Resource limits**: 8 KiB max JSON body, 2048-char max URL, 100 MiB max media size, 3 concurrent metadata workers, 2 concurrent download workers, 60s metadata timeout, 180s download timeout, 90s FFmpeg timeout, finite retries.
+- **No stored credentials**: No cookies, tokens, user accounts, or persistent media storage are used.
+
+## Limitations
+
+- Single Uvicorn worker means concurrency limits are process-local; scaling horizontally multiplies concurrent FFmpeg memory/CPU usage.
+- Free/low-memory hosting tiers (e.g., 512 MiB RAM) may struggle with long or high-bitrate videos requiring full re-encoding (`libx264`).
+- Platforms frequently change anti-bot protections, endpoints, and authentication requirements; private, age-gated, region-locked, or login-walled posts may fail upstream.
+- Without TLS interception, the filtering proxy validates destination hostnames, ports, and resolved IPs for every `CONNECT` tunnel, not encrypted HTTP paths inside the TLS tunnel.
+
+## Troubleshooting
+
+- **"The required outbound proxy is unavailable or misconfigured"**: Ensure `filtering_proxy` is running and `CLIPFETCH_EGRESS_PROXY` is set (e.g. `http://127.0.0.1:3128`), or set `CLIPFETCH_REQUIRE_EGRESS_PROXY=false` for local development only.
+- **CORS errors in the browser**: Check `CLIPFETCH_FRONTEND_ORIGINS` matches your frontend origin exactly (scheme + host + port, no trailing slash) and `frontend/js/config.js` points to the right backend URL.
+- **FFmpeg not found**: Install `ffmpeg` (includes `ffprobe`) and verify `ffmpeg -version` and `ffprobe -version` succeed in the backend environment.
+- **Metadata or download fails for a public URL**: Confirm the URL opens publicly in a logged-out browser, check that it is not a live stream or playlist, and update `yt-dlp` if an upstream platform changed its extractor layout.
+
+## Legal and ethical usage
+
+ClipFetch is intended strictly for downloading media that you own or have explicit permission to save. Do not use ClipFetch to bypass authentication, DRM, paywalls, or platform access controls, or to infringe copyright or violate the terms of service of third-party platforms.

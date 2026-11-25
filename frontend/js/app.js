@@ -223,7 +223,9 @@ if (!Array.isArray(formats)) {
         return (
             format &&
             typeof format.format_id === "string" &&
-            /^[A-Za-z0-9_-]{1,40}$/.test(format.format_id) &&
+            /^[A-Za-z0-9_.-]{1,40}$/.test(format.format_id) &&
+            format.format_id !== "best" &&
+            format.format_id !== "audio_mp3" &&
             format.has_video === true &&
             typeof format.resolution === "string" &&
             /^\d+x\d+$/.test(format.resolution)
@@ -426,18 +428,24 @@ form.addEventListener("submit", async (event) => {
             }
         );
 
-        const data = await response.json();
+        let data = null;
+
+        try {
+            data = await response.json();
+        } catch {
+            data = null;
+        }
 
         if (!response.ok) {
             const message =
-                typeof data.detail === "string"
+                typeof data?.detail === "string"
                     ? data.detail
                     : "Unable to retrieve media information.";
 
             throw new Error(message);
         }
 
-        if (!data.success || !data.media) {
+        if (!data?.success || !data?.media) {
             throw new Error(
                 "The server returned an unexpected response."
             );
@@ -484,13 +492,45 @@ downloadButton.addEventListener("click", async () => {
 
     setDownloading(true);
     showDownloadStatus("Preparing your download. Please wait...");
-    const waitMessageTimer = window.setTimeout(() => {
-        showDownloadStatus(
-            "The server is still preparing the file. The browser download starts when preparation is complete."
-        );
-    }, 10000);
+    let waitMessageTimer = null;
 
     try {
+        let saveFileHandle = null;
+
+        // Choose the destination during the click gesture so capable browsers
+        // can stream large responses directly to disk instead of buffering a
+        // complete Blob in memory.
+        if (typeof window.showSaveFilePicker === "function") {
+            try {
+                const isAudio = formatId === "audio_mp3";
+                saveFileHandle = await window.showSaveFilePicker({
+                    suggestedName: isAudio
+                        ? "clipfetch_audio.mp3"
+                        : "clipfetch_media.mp4",
+                    types: [{
+                        description: isAudio ? "MP3 audio" : "MP4 video",
+                        accept: isAudio
+                            ? { "audio/mpeg": [".mp3"] }
+                            : { "video/mp4": [".mp4"] },
+                    }],
+                });
+            } catch (error) {
+                if (error?.name === "AbortError") {
+                    showDownloadStatus("Download cancelled.");
+                    return;
+                }
+
+                // Fall back to standard Blob download if file picker fails.
+                saveFileHandle = null;
+            }
+        }
+
+        waitMessageTimer = window.setTimeout(() => {
+            showDownloadStatus(
+                "The server is still preparing the file. The browser download starts when preparation is complete."
+            );
+        }, 10000);
+
         const response = await fetch(
             `${API_BASE_URL}/api/download`,
             {
@@ -521,6 +561,32 @@ downloadButton.addEventListener("click", async () => {
             throw new Error(message);
         }
 
+        if (
+            saveFileHandle &&
+            response.body &&
+            typeof response.body.pipeTo === "function"
+        ) {
+            const writable = await saveFileHandle.createWritable();
+
+            try {
+                await response.body.pipeTo(writable);
+            } catch (error) {
+                try {
+                    await writable.abort(error);
+                } catch {
+                    // Preserve the original stream error for the user.
+                }
+
+                throw error;
+            }
+
+            showDownloadStatus(
+                "Your download has been saved successfully.",
+                "success"
+            );
+            return;
+        }
+
         const blob = await response.blob();
 
         if (blob.size === 0) {
@@ -528,32 +594,35 @@ downloadButton.addEventListener("click", async () => {
         }
 
         // Get filename from response headers
-    const disposition = response.headers.get("Content-Disposition");
+        const disposition = response.headers.get("Content-Disposition");
+        const isAudio = formatId === "audio_mp3";
 
-    let filename = "clipfetch_media.mp4";
+        let filename = isAudio
+            ? "clipfetch_audio.mp3"
+            : "clipfetch_media.mp4";
 
-    if (disposition) {
-    const utf8Match = disposition.match(
-        /filename\*=UTF-8''([^;]+)/i
-    );
+        if (disposition) {
+            const utf8Match = disposition.match(
+                /filename\*=UTF-8''([^;]+)/i
+            );
 
-    const normalMatch = disposition.match(
-        /filename="?([^";]+)"?/i
-    );
+            const normalMatch = disposition.match(
+                /filename="?([^";]+)"?/i
+            );
 
-    const rawFilename = utf8Match?.[1]
-        ? decodeURIComponent(utf8Match[1].trim())
-        : normalMatch?.[1]?.trim();
+            const rawFilename = utf8Match?.[1]
+                ? decodeURIComponent(utf8Match[1].trim())
+                : normalMatch?.[1]?.trim();
 
-    if (rawFilename) {
-        filename = rawFilename;
-    }
-   }
+            if (rawFilename) {
+                filename = rawFilename;
+            }
+        }
 
-// Ensure the downloaded file has a video extension
-if (!/\.[a-z0-9]{2,5}$/i.test(filename)) {
-    filename += ".mp4";
-}
+        // Ensure the downloaded file has an appropriate extension
+        if (!/\.[a-z0-9]{2,5}$/i.test(filename)) {
+            filename += isAudio ? ".mp3" : ".mp4";
+        }
         // Create downloadable file
         const objectURL = URL.createObjectURL(blob);
 

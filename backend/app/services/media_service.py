@@ -44,6 +44,7 @@ def _extract_metadata(url: str) -> dict:
         "no_warnings": True,
         "noplaylist": True,
         "skip_download": True,
+        "hls_prefer_native": True,
         "socket_timeout": SOCKET_TIMEOUT,
         **get_retry_policy(
             retries=1,
@@ -55,8 +56,13 @@ def _extract_metadata(url: str) -> dict:
     }
 
     try:
-        # Configure outbound proxy when required.
-        options.update(get_egress_proxy_options())
+        # Require proxy configuration before any extractor request.
+        try:
+            options.update(get_egress_proxy_options())
+        except NetworkSecurityError as exc:
+            raise MediaServiceError(
+                "The required outbound proxy is unavailable or misconfigured."
+            ) from exc
 
         # TikTok requires browser impersonation.
         if detect_platform(url).get("platform") == "TikTok":
@@ -80,13 +86,33 @@ def _extract_metadata(url: str) -> dict:
                 "Playlist URLs are not supported."
             )
 
+        if info.get("is_live"):
+            raise MediaServiceError(
+                "Live streams are not supported."
+            )
+
+        raw_formats = info.get("formats") or []
+        if len(raw_formats) > MAX_FORMATS:
+            video_formats = [
+                item for item in raw_formats
+                if item.get("vcodec") not in (None, "none")
+            ]
+            selected_formats = (
+                video_formats[-MAX_FORMATS:]
+                if video_formats
+                else raw_formats[-MAX_FORMATS:]
+            )
+        else:
+            selected_formats = raw_formats
+
         formats = []
 
-        for item in info.get("formats", [])[:MAX_FORMATS]:
+        for item in selected_formats:
             formats.append({
                 "format_id": item.get("format_id"),
                 "extension": item.get("ext"),
                 "resolution": item.get("resolution"),
+                "tbr": item.get("tbr"),
                 "filesize": (
                     item.get("filesize")
                     or item.get("filesize_approx")

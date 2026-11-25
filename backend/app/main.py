@@ -6,7 +6,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
-from app.middleware import RequestBodyLimitMiddleware
+from app.middleware import (
+    RequestBodyLimitMiddleware,
+    SecurityHeadersMiddleware,
+)
 
 
 def get_allowed_origins() -> list[str]:
@@ -53,6 +56,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,

@@ -44,12 +44,16 @@ class FakeYoutubeDL:
     def process_ie_result(self, info, download=True):
         self.process_count += 1
         assert download is True
-        assert self.params["format"] == (
-            "bestvideo[vcodec~='^(avc1|h264)']"
-            "+bestaudio[acodec~='^(mp4a|aac)']/"
-            "best[vcodec~='^(avc1|h264)'][acodec~='^(mp4a|aac)']/"
-            "bestvideo+bestaudio/best"
-        )
+        assert self.params["format"] in {
+            "bestaudio/best",
+            (
+                "bestvideo[vcodec~='^(avc1|h264)']"
+                "+bestaudio[acodec~='^(mp4a|aac)']/"
+                "best[vcodec~='^(avc1|h264)'][acodec~='^(mp4a|aac)']/"
+                "bestvideo+bestaudio/best"
+            ),
+        }
+        assert self.format_selector == self.params["format"]
         self._write_source_file()
 
     def download(self, urls):
@@ -64,6 +68,12 @@ class FakeYoutubeDL:
 
 
 def test_audio_download_creates_mp3(monkeypatch, tmp_path):
+    monkeypatch.setattr(service, "get_egress_proxy_options", lambda: {})
+    monkeypatch.setattr(
+        service,
+        "validate_public_host",
+        lambda url: None,
+    )
     monkeypatch.setattr(
         service.yt_dlp,
         "YoutubeDL",
@@ -88,6 +98,11 @@ def test_audio_download_creates_mp3(monkeypatch, tmp_path):
     assert result.name == "clipfetch_audio.mp3"
     assert result.is_file()
     assert result.read_bytes() == b"fake mp3 audio"
+
+    fake_ydl = FakeYoutubeDL.instances[-1]
+    assert fake_ydl.extract_count == 1
+    assert fake_ydl.process_count == 1
+    assert fake_ydl.format_selector == "bestaudio/best"
 
 
 def test_video_download_creates_mp4(monkeypatch, tmp_path):
@@ -135,7 +150,52 @@ def test_video_download_creates_mp4(monkeypatch, tmp_path):
     assert fake_ydl.format_selector == fake_ydl.params["format"]
 
 
+def test_download_fails_before_extraction_when_proxy_is_missing(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLIPFETCH_EGRESS_PROXY", raising=False)
+    monkeypatch.delenv("CLIPFETCH_REQUIRE_EGRESS_PROXY", raising=False)
+    monkeypatch.setattr(
+        service, "validate_public_host", lambda url: pytest.fail("unexpected DNS check")
+    )
+    monkeypatch.setattr(
+        service.yt_dlp, "YoutubeDL", lambda options: pytest.fail("unexpected extractor")
+    )
+
+    with pytest.raises(service.DownloadServiceError, match="proxy configuration"):
+        service._download_media(
+            "https://www.tiktok.com/@user/video/123456", "best", tmp_path
+        )
+
+
+def test_yt_dlp_download_receives_configured_proxy(monkeypatch, tmp_path):
+    monkeypatch.setattr(service, "validate_public_host", lambda url: None)
+    monkeypatch.setattr(
+        service,
+        "get_egress_proxy_options",
+        lambda: {"proxy": "http://clipfetch-proxy-abc123:3128"},
+    )
+    monkeypatch.setattr(service.yt_dlp, "YoutubeDL", FakeYoutubeDL)
+    monkeypatch.setattr(
+        service,
+        "_convert_to_mp4",
+        lambda source, output: output.write_bytes(b"fake mp4"),
+    )
+
+    service._download_media(
+        "https://www.tiktok.com/@user/video/123456", "best", tmp_path
+    )
+
+    assert FakeYoutubeDL.instances[-1].options["proxy"] == (
+        "http://clipfetch-proxy-abc123:3128"
+    )
+
+
 def test_download_rejects_oversized_source(monkeypatch, tmp_path):
+    monkeypatch.setattr(service, "get_egress_proxy_options", lambda: {})
+    monkeypatch.setattr(
+        service,
+        "validate_public_host",
+        lambda url: None,
+    )
     monkeypatch.setattr(
         service.yt_dlp,
         "YoutubeDL",
@@ -163,6 +223,12 @@ def test_audio_conversion_error_is_propagated(
     monkeypatch,
     tmp_path,
 ):
+    monkeypatch.setattr(service, "get_egress_proxy_options", lambda: {})
+    monkeypatch.setattr(
+        service,
+        "validate_public_host",
+        lambda url: None,
+    )
     monkeypatch.setattr(
         service.yt_dlp,
         "YoutubeDL",
@@ -484,3 +550,73 @@ def test_empty_temp_directory_setting_uses_system_temp(monkeypatch):
 def test_temp_directory_setting_must_be_absolute():
     with pytest.raises(ValueError, match="absolute path"):
         service._get_download_dir("relative/temp")
+
+
+def test_download_resolves_url_redirect_before_format_selection(monkeypatch, tmp_path):
+    class RedirectYoutubeDL(FakeYoutubeDL):
+        def extract_info(self, url, download=False, process=True):
+            self.extract_count += 1
+            return {
+                "_type": "url",
+                "url": "https://www.tiktok.com/@user/video/123456",
+            }
+
+        def process_ie_result(self, info, download=True):
+            if not download:
+                return {
+                    "_type": "video",
+                    "formats": [
+                        {
+                            "format_id": "720p",
+                            "vcodec": "h264",
+                            "acodec": "aac",
+                        }
+                    ],
+                }
+            self.process_count += 1
+            assert self.params["format"] == "720p"
+            self._write_source_file()
+
+    monkeypatch.setattr(service, "get_egress_proxy_options", lambda: {})
+    monkeypatch.setattr(service, "validate_public_host", lambda url: None)
+    monkeypatch.setattr(service.yt_dlp, "YoutubeDL", RedirectYoutubeDL)
+    monkeypatch.setattr(
+        service,
+        "_convert_to_mp4",
+        lambda source, output: output.write_bytes(b"fake mp4"),
+    )
+
+    result = service._download_media(
+        "https://vm.tiktok.com/ZM123456/",
+        "720p",
+        tmp_path,
+    )
+    assert result.name == "clipfetch_media.mp4"
+    assert RedirectYoutubeDL.instances[-1].options["hls_prefer_native"] is True
+
+
+def test_download_rejects_live_streams_and_invalid_format_id(monkeypatch, tmp_path):
+    import asyncio
+
+    class LiveYoutubeDL(FakeYoutubeDL):
+        def extract_info(self, url, download=False, process=True):
+            return {"_type": "video", "is_live": True, "formats": []}
+
+    monkeypatch.setattr(service, "get_egress_proxy_options", lambda: {})
+    monkeypatch.setattr(service, "validate_public_host", lambda url: None)
+    monkeypatch.setattr(service.yt_dlp, "YoutubeDL", LiveYoutubeDL)
+
+    with pytest.raises(service.DownloadServiceError, match="Live streams"):
+        service._download_media(
+            "https://www.tiktok.com/@user/video/123456",
+            "best",
+            tmp_path,
+        )
+
+    with pytest.raises(service.DownloadServiceError, match="Invalid format"):
+        asyncio.run(
+            service.download_authorized_media(
+                "https://www.tiktok.com/@user/video/123456",
+                "best/worst",
+            )
+        )

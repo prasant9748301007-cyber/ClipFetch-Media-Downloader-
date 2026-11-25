@@ -93,3 +93,41 @@ class RequestBodyLimitMiddleware:
             "type": "http.response.body",
             "body": body,
         })
+
+
+class SecurityHeadersMiddleware:
+    """Attach baseline HTTP security headers to API responses."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(
+        self,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+    ) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+
+        async def send_with_headers(message: Message) -> None:
+            if message.get("type") == "http.response.start":
+                headers = list(message.get("headers", []))
+                existing = {name.lower() for name, _ in headers}
+                defaults = [
+                    (b"x-content-type-options", b"nosniff"),
+                    (b"x-frame-options", b"DENY"),
+                    (b"referrer-policy", b"no-referrer"),
+                ]
+                if path.startswith("/api/"):
+                    defaults.append((b"cache-control", b"no-store"))
+                for name, value in defaults:
+                    if name not in existing:
+                        headers.append((name, value))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)

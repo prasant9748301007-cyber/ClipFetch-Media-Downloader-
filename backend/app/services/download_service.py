@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -98,6 +99,11 @@ def _get_format_selector(
     if not info or info.get("_type") in {"playlist", "multi_video"}:
         raise DownloadServiceError(
             "This media is unavailable or playlist URLs are not supported."
+        )
+
+    if info.get("is_live"):
+        raise DownloadServiceError(
+            "Live streams are not supported."
         )
 
     if format_id == "best":
@@ -468,6 +474,7 @@ def _download_media(
         "format": "bestaudio/best" if is_audio else "best",
         "outtmpl": str(output_dir / "clipfetch_source.%(ext)s"),
         "noplaylist": True,
+        "hls_prefer_native": True,
         "quiet": True,
         "no_warnings": True,
         "socket_timeout": 10,
@@ -502,37 +509,62 @@ def _download_media(
         validate_public_host(url)
 
         with yt_dlp.YoutubeDL(options) as ydl:
-            if is_audio:
-                download_started = time.perf_counter()
-                ydl.download([url])
-            else:
-                metadata_started = time.perf_counter()
-                info = ydl.extract_info(
-                    url,
-                    download=False,
-                    process=False,
-                )
-                logger.warning(
-                    "ClipFetch timing | metadata extraction: %.2f seconds",
-                    time.perf_counter() - metadata_started,
+            metadata_started = time.perf_counter()
+            info = ydl.extract_info(
+                url,
+                download=False,
+                process=False,
+            )
+            hops = 0
+            while (
+                info
+                and info.get("_type") in {"url", "url_transparent"}
+                and hops < 3
+            ):
+                info = ydl.process_ie_result(info, download=False)
+                hops += 1
+
+            logger.info(
+                "ClipFetch timing | stage=metadata_extraction "
+                "| duration_seconds=%.3f",
+                time.perf_counter() - metadata_started,
+            )
+
+            if not info or info.get("_type") in {
+                "playlist",
+                "multi_video",
+            }:
+                raise DownloadServiceError(
+                    "This media is unavailable or playlist URLs "
+                    "are not supported."
                 )
 
+            if info.get("is_live"):
+                raise DownloadServiceError(
+                    "Live streams are not supported."
+                )
+
+            if is_audio:
+                format_selector = "bestaudio/best"
+            else:
                 # Reuse the extracted result instead of asking yt-dlp to
                 # extract the same URL again during the download.
                 format_selector = _get_format_selector(
                     info,
                     format_id,
                 )
-                ydl.params["format"] = format_selector
-                ydl.format_selector = ydl.build_format_selector(
-                    format_selector
-                )
 
-                download_started = time.perf_counter()
-                ydl.process_ie_result(info, download=True)
+            ydl.params["format"] = format_selector
+            ydl.format_selector = ydl.build_format_selector(
+                format_selector
+            )
 
-        logger.warning(
-            "ClipFetch timing | yt-dlp download: %.2f seconds",
+            download_started = time.perf_counter()
+            ydl.process_ie_result(info, download=True)
+
+        logger.info(
+            "ClipFetch timing | stage=media_transfer "
+            "| duration_seconds=%.3f",
             time.perf_counter() - download_started,
         )
 
@@ -583,15 +615,21 @@ def _download_media(
 
             converted_path.replace(final_path)
 
+        source_size = source_path.stat().st_size
+        output_size = final_path.stat().st_size
+
         # Keep only the final response file while it is streamed to the user.
         try:
             source_path.unlink(missing_ok=True)
         except OSError:
             logger.warning("Could not remove temporary media source file.")
 
-        logger.warning(
-            "ClipFetch timing | media conversion: %.2f seconds",
+        logger.info(
+            "ClipFetch timing | stage=media_conversion "
+            "| duration_seconds=%.3f | source_bytes=%d | output_bytes=%d",
             time.perf_counter() - conversion_started,
+            source_size,
+            output_size,
         )
 
         return final_path
@@ -648,7 +686,16 @@ async def download_authorized_media(
 ):
     """Validate and download authorized media with resource limits."""
 
+    if isinstance(url, str):
+        url = url.strip()
+
     _validate_url(url)
+
+    if (
+        not isinstance(format_id, str)
+        or not re.fullmatch(r"[A-Za-z0-9_.-]{1,40}", format_id)
+    ):
+        raise DownloadServiceError("Invalid format selection.")
 
     try:
         await asyncio.wait_for(

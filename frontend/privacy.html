@@ -220,6 +220,7 @@
                 document.body.classList.contains("dark-theme");
 
             themeToggle.textContent = isDark ? "☀" : "☾";
+            themeToggle.setAttribute("aria-pressed", String(isDark));
         }
 
         if (localStorage.getItem("clipfetch-theme") === "dark") {

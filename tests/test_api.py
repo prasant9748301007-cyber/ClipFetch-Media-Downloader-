@@ -14,6 +14,30 @@ def test_health_endpoint():
 
     assert response.status_code == 200
     assert response.json()["status"] == "healthy"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_root_endpoint_and_cors_preflight():
+    root_response = client.get("/")
+    assert root_response.status_code == 200
+    assert root_response.json()["health"] == "/api/health"
+
+    preflight = client.options(
+        "/api/metadata",
+        headers={
+            "Origin": "http://127.0.0.1:5500",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "Content-Type",
+        },
+    )
+    assert preflight.status_code == 200
+    assert (
+        preflight.headers["access-control-allow-origin"]
+        == "http://127.0.0.1:5500"
+    )
 
 
 def test_validate_tiktok_url():
